@@ -152,3 +152,17 @@ Before a release:
 ## User Override
 
 If the user's instructions conflict with any rule in this document, ask for explicit confirmation before overriding. Only then execute their instructions.
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked in GitHub Issues (via the `gh` CLI). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-role vocabulary; label strings equal the role names. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout: one `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
