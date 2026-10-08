@@ -286,12 +286,12 @@ describe("attributing the spawn to the real session", () => {
 
   it("forwards the parameters the clone chose", async () => {
     const tool = agentTool();
-    cloneSession(callsAgent({ subagent_type: "Plan", prompt: "sketch the migration" }));
+    cloneSession(callsAgent({ subagent_type: "general-purpose", prompt: "sketch the migration" }));
 
     await runMentionClone(opts({ agentTool: tool }));
 
     expect(tool.execute.mock.calls[0][1]).toEqual({
-      subagent_type: "Plan",
+      subagent_type: "general-purpose",
       prompt: "sketch the migration",
       run_in_background: true,
     });

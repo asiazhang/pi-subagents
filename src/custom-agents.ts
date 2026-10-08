@@ -18,7 +18,7 @@ import type { AgentConfig, IsolationMode, MemoryScope, ThinkingLevel } from "./t
  * the colon, so `name: Code Reviewer` must work here too. (The stricter
  * letters/digits/underscore/hyphen regex in Claude Code applies to the Agent
  * tool's spawn-time `name` parameter, which is a different field.) Mixed case
- * has to be allowed regardless: the built-in types `Explore` and `Plan` use it,
+ * has to be allowed regardless: the built-in type `Explore` uses it,
  * and a file must be able to override one.
  */
 const RESERVED_IN_TYPE = ":";

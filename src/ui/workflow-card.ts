@@ -9,7 +9,7 @@
  *   │ ├─ ⟳ review:perf      · Explore · 8 tool calls · 21s
  *   │ └─ ⟳ review:security
  *   ╰─ Verify
- *     └─ ⟳ verify:auth.ts   · Plan · 3 tool calls · 9s
+ *     └─ ⟳ verify:auth.ts   · Explore · 3 tool calls · 9s
  *   ⎿  scanned 41 changed files
  * ```
  *

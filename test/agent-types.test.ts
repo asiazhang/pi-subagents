@@ -48,11 +48,11 @@ describe("agent type registry", () => {
     it("recognizes all default agent types", () => {
       expect(isValidType("general-purpose")).toBe(true);
       expect(isValidType("Explore")).toBe(true);
-      expect(isValidType("Plan")).toBe(true);
     });
 
     it("does not include removed agents", () => {
       expect(isValidType("statusline-setup")).toBe(false);
+      expect(isValidType("Plan")).toBe(false);
       expect(isValidType("claude-code-guide")).toBe(false);
     });
 
@@ -65,7 +65,7 @@ describe("agent type registry", () => {
       expect(isValidType("explore")).toBe(true);
       expect(isValidType("EXPLORE")).toBe(true);
       expect(isValidType("General-Purpose")).toBe(true);
-      expect(isValidType("plan")).toBe(true);
+      expect(isValidType("plan")).toBe(false);
     });
 
     it("case-insensitive lookup works for getAgentConfig", () => {
@@ -110,7 +110,7 @@ describe("agent type registry", () => {
     // An explicit `false` here would silently win over the caller's `true` via `??` in
     // resolveAgentInvocationConfig, breaking documented Agent tool params.
     it("default agents do not lock strategy fields (run_in_background / inherit_context / isolated)", () => {
-      for (const name of ["general-purpose", "Explore", "Plan"]) {
+      for (const name of ["general-purpose", "Explore"]) {
         const cfg = getAgentConfig(name);
         expect(cfg?.runInBackground, `${name}.runInBackground`).toBeUndefined();
         expect(cfg?.inheritContext, `${name}.inheritContext`).toBeUndefined();
@@ -122,7 +122,7 @@ describe("agent type registry", () => {
       const names = getDefaultAgentNames();
       expect(names).toContain("general-purpose");
       expect(names).toContain("Explore");
-      expect(names).toContain("Plan");
+      expect(names).not.toContain("Plan");
     });
 
     it("BUILTIN_TOOL_NAMES includes all built-in tools", () => {
@@ -155,7 +155,6 @@ describe("agent type registry", () => {
       expect(getAvailableTypes()).toEqual([]);
       expect(isValidType("general-purpose")).toBe(false);
       expect(isValidType("Explore")).toBe(false);
-      expect(isValidType("Plan")).toBe(false);
     });
 
     it("user agents are unaffected when defaults are disabled", () => {
@@ -176,7 +175,6 @@ describe("agent type registry", () => {
       registerAgents(new Map());
       expect(isValidType("general-purpose")).toBe(true);
       expect(isValidType("Explore")).toBe(true);
-      expect(isValidType("Plan")).toBe(true);
     });
 
     it("getConfig falls back to the hardcoded config when defaults are disabled and no user agents exist", () => {
@@ -304,14 +302,14 @@ describe("agent type registry", () => {
     });
 
     it("disabled agent is excluded from available types", () => {
-      const agents = new Map([["Plan", makeAgentConfig({
-        name: "Plan",
+      const agents = new Map([["auditor", makeAgentConfig({
+        name: "auditor",
         enabled: false,
       })]]);
       registerAgents(agents);
 
-      expect(isValidType("Plan")).toBe(false);
-      expect(getAvailableTypes()).not.toContain("Plan");
+      expect(isValidType("auditor")).toBe(false);
+      expect(getAvailableTypes()).not.toContain("auditor");
     });
 
     it("general-purpose can be disabled but fallback still works", () => {

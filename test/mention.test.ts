@@ -197,6 +197,6 @@ describe("agentMentionReminder", () => {
   });
 
   it("names the agent it was given", () => {
-    expect(agentMentionReminder("Plan")).toContain('invoke the agent "Plan"');
+    expect(agentMentionReminder("general-purpose")).toContain('invoke the agent "general-purpose"');
   });
 });

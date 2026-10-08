@@ -1154,8 +1154,8 @@ Good body.`);
 
     it("preserves allowed_subagents in both its list and `all` forms", () => {
       expect(roundTrip({ allowedSubagents: "all" }).allowedSubagents).toBe("all");
-      expect(roundTrip({ allowedSubagents: ["Explore", "Plan"] }).allowedSubagents)
-        .toEqual(["Explore", "Plan"]);
+      expect(roundTrip({ allowedSubagents: ["Explore", "general-purpose"] }).allowedSubagents)
+        .toEqual(["Explore", "general-purpose"]);
     });
 
     it("preserves a description containing a colon", () => {

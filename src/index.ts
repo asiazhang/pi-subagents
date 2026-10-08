@@ -1201,8 +1201,8 @@ export default function (pi: ExtensionAPI) {
   }
 
   // ---- Disable default agents configuration ----
-  // When enabled, the three hardcoded default agents (general-purpose, Explore,
-  // Plan) are not registered. User-defined agents from project/global custom
+  // When enabled, the hardcoded default agents (general-purpose, Explore) are
+  // not registered. User-defined agents from project/global custom
   // agent dirs are completely unaffected — only DEFAULT_AGENTS are suppressed.
   // Defaults to false; opt-in via `/agents → Settings` or subagents.json.
   // State lives in agent-types.ts (isDefaultsDisabled) because registerAgents
@@ -3591,7 +3591,7 @@ Write the file using the write tool. Only write the file, nothing else.`;
         {
           id: "disableDefaultAgents",
           label: "Disable defaults",
-          description: "Hide built-in agents (general-purpose, Explore, Plan) — custom agents are unaffected",
+          description: "Hide built-in agents (general-purpose, Explore) — custom agents are unaffected",
           currentValue: isDefaultsDisabled() ? "on" : "off",
           values: ["on", "off"],
         },

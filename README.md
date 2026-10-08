@@ -150,7 +150,7 @@ token 字段在括号内带两个可选信号:
   @auth-audit     send message · Explore · running · audit the auth flow
   @explore-2      send message · running · find flaky tests
   @code-review    resume · code-review · check the diff
-  @plan           start agent · Software architect agent for designing implementation plans.
+  @architect      start agent · Software architect agent for designing implementation plans.
   index.ts        src/index.ts                        ← pi's own file rows, still there
   index.d.ts      dist/index.d.ts
 ```
@@ -181,15 +181,15 @@ Claude Code 自己并不启动被提及的代理。`@agent-<type>` 变成一个*
 
 它是字面意义上的克隆——会话自己的条目和同一份系统提示词,而不是 [`inherit_context`](#frontmatter-字段) 那样的文本转述——取自内存且感知压缩,克隆读到什么,主模型就在以什么为工作基础。克隆只有一个工具和一个任务;它不能读、写或运行任何东西,因为一个带着完整工具集的隐形轮次可能做出隐形的工作。它启动的代理归属*真实*会话,其转录和 `rootSessionId` 落在它们本来就会落的地方,且不携带 `tool-use-id`——主对话从未发出过。
 
-| 模式 | `@plan sketch the migration`(没有 Plan 代理在运行时) |
+| 模式 | `@architect sketch the migration`(没有同名代理在运行时) |
 |------|----------------------------------------------------------|
-| `model`(默认) | 本对话的克隆在屏幕外执行这一轮并调用 `Agent`,代理以**从对话写就的**提示词启动。聊天里只会出现一个 `Prompting @plan…` toast——措辞表示正在等待那一轮;`direct` 的 `Started @plan` 则意味着它已在运行 |
+| `model`(默认) | 本对话的克隆在屏幕外执行这一轮并调用 `Agent`,代理以**从对话写就的**提示词启动。聊天里只会出现一个 `Prompting @architect…` toast——措辞表示正在等待那一轮;`direct` 的 `Started @architect` 则意味着它已在运行 |
 | `direct` | 代理在此处立即启动,以你的消息逐字作为其提示词。完全不调用模型,因此启动没有延迟 |
 | `off` | `@` 重新只意味着"附加文件" |
 
 无论哪种方式,启动的代理都会遵守自己的 frontmatter——`model:`、`thinking:`、`max_turns:` 全部生效,因为两条路径都不传递它们,代理自身的配置获胜。把提及作为会话的第一件事也有效:本来就没有历史可携带,克隆仍运行在你的模型和系统提示词上。如果它完全无法交付——模型总可以用散文回答而不是调用工具——代理会直接以你的文本启动,toast 会说明这一点,而不是让你两手空空。
 
-`model` 也是唯一在 TUI 之外可用的模式:`pi -p '@plan the migration'` 会克隆、生成并通过普通完成路径汇报,而 direct 启动会分离代理且不打印任何内容。出于同样原因,发消息和恢复在两种模式下都仅限 TUI。
+`model` 也是唯一在 TUI 之外可用的模式:`pi -p '@architect sketch the migration'` 会克隆、生成并通过普通完成路径汇报,而 direct 启动会分离代理且不打印任何内容。出于同样原因,发消息和恢复在两种模式下都仅限 TUI。
 
 相对 `direct` 要权衡两点:克隆会重发整个对话,且代理要等那一轮结束才启动。
 
@@ -243,9 +243,8 @@ Claude Code 自己并不启动被提及的代理。`@agent-<type>` 变成一个*
 |------|-------|-------|-------------|-------------|
 | `general-purpose` | 全部 7 个 | 继承 | `append`(父级孪生) | 继承父级的完整系统提示词——同样的规则、CLAUDE.md、项目约定 |
 | `Explore` | read, bash, grep, find, ls | haiku(回退到继承) | `replace`(独立) | 快速代码库探索(只读) |
-| `Plan` | read, bash, grep, find, ls | 继承 | `replace`(独立) | 用于实现规划的软件架构师(只读) |
 
-`general-purpose` 代理是**父级孪生**——它接收父级的完整系统提示词,外加一个子代理上下文桥接,因此遵循与父级相同的规则。Explore 和 Plan 使用为各自只读角色定制的独立提示词。
+`general-purpose` 代理是**父级孪生**——它接收父级的完整系统提示词,外加一个子代理上下文桥接,因此遵循与父级相同的规则。Explore 使用为其只读角色定制的独立提示词。
 
 默认代理可以被**弹出**(`/agents` → 选择代理 → Eject)导出为 `.md` 文件以便自定义;可以通过创建同名 `.md` 文件来**覆盖**(如 `.pi/agents/general-purpose.md`);或通过 `enabled: false` frontmatter **按项目禁用**。
 
@@ -623,7 +622,7 @@ Settings                                    ← max concurrency (background + fo
 
 **严格代理文件**(`strictAgentFiles`,默认 `false`):开启时,不可读或无法解析的[代理文件](#自定义代理)会在启动时中止扩展加载并指出文件,而非跳过并警告——这样签入的 `.pi/agents/` 就不会悄悄落到来自其他位置的同名代理上。仅限启动:每次 `Agent` 调用时运行的会话中途重载,无论设置如何都只警告,因为一次糟糕的编辑不该在无关的生成上杀死会话。也可从 `/agents → Settings → Strict agent files` 设置。
 
-**禁用默认代理**(`disableDefaultAgents`,默认 `false`):开启时,三个内置代理(general-purpose、Explore、Plan)不注册——只有你项目/全局的自定义代理被展示和可生成。用户定义的代理不受影响,包括按名覆盖默认代理的那些。Agent 工具的类型列表在下一个 pi 会话更新(工具 schema 在启动时注册)。
+**禁用默认代理**(`disableDefaultAgents`,默认 `false`):开启时,内置代理(general-purpose、Explore)不注册——只有你项目/全局的自定义代理被展示和可生成。用户定义的代理不受影响,包括按名覆盖默认代理的那些。Agent 工具的类型列表在下一个 pi 会话更新(工具 schema 在启动时注册)。
 
 **代理提及**(`agentMentions`,默认 `"model"`):提示符处的 [`@句柄 消息`](#agent-提及)是否寻址该子代理而非主模型——发消息、恢复或启动它——以及 `@` 是否在 pi 的文件补全旁提供代理。`"model"` 和 `"direct"` 只在[谁来启动一个未运行的代理](#启动新代理)上有别:是本对话的屏幕外克隆,经由 `<system-reminder>` 和真实的 `Agent` 调用;还是本扩展,立即且无需模型调用。发消息和恢复在两者中都是直接的。`"off"` 关闭全部三个动作加建议列表,`@` 重新只意味着"附加文件",每条 `@…` 提示逐字到达主模型。通过 `/agents → Settings → Agent mentions` 切换;实时生效。此设置过去接受的布尔值仍然被读取——`true` 读作 `"model"`,`false` 读作 `"off"`。
 
@@ -940,7 +939,7 @@ src/
   types.ts            # 类型定义(AgentConfig、AgentRecord 等)
 
   # 代理注册表
-  default-agents.ts   # 内嵌默认代理配置(general-purpose、Explore、Plan)
+  default-agents.ts   # 内嵌默认代理配置(general-purpose、Explore)
   custom-agents.ts    # 从 .pi/agents/、.agents/agents/ 和全局 agents 加载用户定义代理
   agent-types.ts      # 统一代理注册表(默认 + 用户)、工具名解析
   agent-file-toggle.ts # 定位/编辑代理的 .md:enabled: 切换、弹出为 frontmatter
