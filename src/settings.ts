@@ -1,12 +1,10 @@
 // Persistence for pi-subagents operational settings.
-// - Global:  ~/.pi/agent/subagents.json (via getAgentDir()) — manual defaults, never written here
-// - Project: <cwd>/.pi/subagents.json — written by /agents → Settings; overrides global on load
+// Project: <cwd>/.pi/subagents.json — written by /agents → Settings.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { NO_FALLBACK } from "./agent-types.js";
-import type { AgentMentionMode, JoinMode, ViewerMarkdownMode, WidgetMode } from "./types.js";
+import type { JoinMode, WidgetMode } from "./types.js";
 
 export interface SubagentsSettings {
   maxConcurrent?: number;
@@ -25,11 +23,11 @@ export interface SubagentsSettings {
    *
    * Bounds only spawns a caller is blocking on inline. Nested children are
    * exempt — their parent is blocked awaiting them, so queueing a child behind
-   * its own parent would deadlock — and so are detached spawns from
-   * cross-extension RPC or `@handle` mentions, which block nobody and are
-   * documented to start immediately. Foreground `resume` is also outside the
-   * pool: it reuses an existing session and never reaches the spawn path, so
-   * several blocking resumes in one message can still exceed the limit.
+   * its own parent would deadlock.
+   *
+   * Foreground `resume` is outside the pool: it reuses an existing session and
+   * never reaches the spawn path, so several blocking resumes in one message
+   * can still exceed the limit.
    */
   maxConcurrentForeground?: number;
   /**
@@ -57,15 +55,6 @@ export interface SubagentsSettings {
    * what "unspecified" means.
    */
   backgroundByDefault?: boolean;
-  /**
-   * Master switch for the schedule subagent feature. Defaults to `true`.
-   * When `false`: the `Agent` tool's `schedule` param + its guideline are
-   * stripped from the tool spec at registration (zero LLM-context cost), the
-   * scheduler doesn't bind to the session, and the `/agents → Scheduled jobs`
-   * menu entry is hidden. Schema-level removal applies at extension load
-   * (next pi session); runtime menu/runtime-fire short-circuit is immediate.
-   */
-  schedulingEnabled?: boolean;
   /**
    * When true, the effective model of each subagent spawn is validated
    * against `enabledModels` from pi's settings — both global
@@ -108,48 +97,10 @@ export interface SubagentsSettings {
    */
   disableDefaultAgents?: boolean;
   /**
-   * Which Agent tool description the LLM sees. "full" (default) is the rich
-   * Claude Code-style prompt; "compact" is a ~75% smaller version (one-line
-   * agent type list, terse usage notes) for small/local models where tool-spec
-   * tokens are expensive; "custom" reads `.pi/agent-tool-description.md`
-   * (project, falling back to `<agentDir>/agent-tool-description.md`) with
-   * `{{placeholder}}` substitution — a missing/empty file falls back to "full".
-   * The mode is read once at tool registration — changing it applies on the
-   * next pi session.
-   */
-  toolDescriptionMode?: ToolDescriptionMode;
-  /**
-   * Whether the Claude Code-style FleetView (the navigable main+subagents list
-   * rendered below the editor) is shown. Defaults to `true`. Pure-UI: when off,
-   * the list never registers and the global key handler never captures input.
-   */
-  fleetView?: boolean;
-  /**
-   * Whether `@handle message` typed at the prompt is routed to that subagent
-   * instead of the main model, and whether `@` offers running agents alongside
-   * pi's file completion. Defaults to `model`. Applied live.
-   *
-   *   - `model`: mentioning an agent that is not running asks the main model to
-   *     spawn it with the `Agent` tool, Claude Code's behaviour. Costs a turn,
-   *     and the model writes the agent's prompt rather than your text being it.
-   *   - `direct`: that agent is started here instead, with the typed message as
-   *     its prompt and no main-model turn spent.
-   *   - `off`: the input hook falls straight through and the stacked
-   *     autocomplete provider delegates everything back to pi's built-in one.
-   *
-   * Messaging a running agent and resuming a finished one are direct in both
-   * `model` and `direct`. The legacy booleans are still accepted: `true` reads
-   * as `model`, `false` as `off`.
-   */
-  agentMentions?: AgentMentionMode;
-  /**
-   * Whether subagents persist their pi session by default, so `@handle` can
-   * reopen an agent's conversation long after its in-memory record is gone.
-   * Defaults to `true`. Per-agent `persist_session:` frontmatter overrides it
-   * in both directions. Turning it off restores the previous behaviour, where
-   * a handle stops resolving roughly ten minutes after the agent finishes and
-   * mentioning it starts a fresh run instead. Persisted sessions also appear
-   * nested under the spawning session in pi's `/resume`.
+   * Whether subagents persist their pi session by default. Defaults to `true`.
+   * Per-agent `persist_session:` frontmatter overrides it in both directions.
+   * Persisted sessions appear nested under the spawning session in pi's
+   * `/resume`.
    */
   rememberAgents?: boolean;
   /**
@@ -157,67 +108,22 @@ export interface SubagentsSettings {
    *   - `all`: show every agent (foreground + background).
    *   - `background`: hide foreground agents — they already render inline as the
    *     Agent tool result, so the widget would otherwise double-render them
-   *     (#118); everything else (background, queued, scheduled, RPC) stays.
+   *     (#118); everything else stays.
    *   - `off`: hide the widget entirely.
    * Defaults to `background`. Pure-UI and applied live (toggling refreshes the
    * widget).
    */
   widgetMode?: WidgetMode;
   /**
-   * Project/global default for writing each subagent's `.output` transcript
+   * Project default for writing each subagent's `.output` transcript
    * (a JSON-lines copy of the run, stored under the OS temp dir).
    * Defaults to `true`. Set `false` to make transcripts opt-in for the whole
    * project (e.g. a repo that shouldn't leave run transcripts on disk for backup
    * or DLP tooling to ingest). A custom agent's `output_transcript` frontmatter
    * overrides this per agent. This governs only the transcript — it does NOT
-   * affect the persisted pi session (`persist_session`), worktree commits
-   * (`isolation: worktree`), or memory files.
+   * affect the persisted pi session (`persist_session`).
    */
   outputTranscript?: boolean;
-  /**
-   * Whether `isolation: "worktree"` may create a worktree at all. Defaults to
-   * `true`. Set `false` on a repo where worktrees are too slow or too large to
-   * be worth it (#184): a requested worktree is then dropped and the agent runs
-   * in the main checkout.
-   *
-   * The drop is deliberately silent — there is no per-result note, because the
-   * setting exists for projects whose model asks for a worktree on every call,
-   * where a note would be noise on every result. What keeps the orchestrator
-   * from claiming a `pi-agent-*` branch anyway is that it is never told the
-   * capability exists: `isolationParam` (invocation-config.ts) drops the field
-   * from both tool schemas, and `isolationGuideline` (index.ts) drops the
-   * matching prose from the full and compact descriptions — a custom one opts
-   * in via the `{{isolationGuideline}}` placeholder. Anything that
-   * reintroduces the prose has to reintroduce a note with it.
-   *
-   * Deliberately a downgrade rather than an error. The fail-loud rule covers
-   * worktrees that *cannot* be created; this is the user declining one, and
-   * throwing would reject exactly the calls that the `isolation: "off"` value
-   * exists to tolerate. Enforced below the tool boundary, so it also covers the
-   * scheduler and the unvalidated cross-extension RPC path.
-   */
-  worktreeIsolation?: boolean;
-  /**
-   * Master switch for scripted workflows. Defaults to `true`.
-   *
-   * Off is not a soft hide: the `SubagentWorkflow` tool is never registered, so
-   * the model is not told it exists and cannot call it, the `/agents`
-   * Workflows entry is hidden, and `--subagents-workflow-file` is refused.
-   *
-   * Absent is not the same as `true`. Unset means *auto*: on, but yielding to
-   * another extension that already offers a workflow tool, because two
-   * orchestrators in one tool spec is a worse default than none — the model
-   * has to guess which to call, and pays for both descriptions to find out.
-   * Setting it explicitly pins the answer in both directions: `true` keeps
-   * ours whatever else is loaded, `false` is off regardless. See
-   * `resolveWorkflowCollisions` in index.ts.
-   *
-   * Read once at extension init, before registration, so flipping it in
-   * `/agents → Settings` takes effect on the next pi session — the same
-   * contract `schedulingEnabled` has, and for the same reason: a tool spec is
-   * fixed once pi has it.
-   */
-  workflowsEnabled?: boolean;
   /**
    * Hard ceiling on nested subagent delegation, counted from the main session:
    * main = 0, its subagents = 1, their children = 2. Defaults to `2`; `0` or `1`
@@ -240,71 +146,7 @@ export interface SubagentsSettings {
    * meaning one thing here and another in the resolver.
    */
   fallbackSubagent?: string;
-  /**
-   * Whether this extension's tool results carry a `usage` field, so subagent
-   * spend reaches the parent session's own accounting. Defaults to `false`.
-   *
-   * Subagents run in their own pi sessions, so by default the parent's footer,
-   * statusline and `/cost` show only what the main model spent — a session that
-   * delegated most of its work reads as nearly free. Pi folds
-   * `toolResult.usage` into `getSessionStats()`, so attaching it makes those
-   * surfaces count subagents too, under `/cost`'s "Tools/summaries" bucket.
-   *
-   * Off by default because it changes numbers the user may already be tracking
-   * (a statusline reading session cost will step up), not because the numbers
-   * are wrong.
-   *
-   * Three properties of what gets reported:
-   *   - Tokens exclude `cacheRead`, for the reason in `usage.ts` — the parent's
-   *     token total therefore rises by billed tokens only.
-   *   - Cost is pi's own per-message `usage.cost.total`; we price nothing, and
-   *     a model pi has no rates for contributes 0.
-   *   - The context-window percentage is untouched. Pi derives it from assistant
-   *     messages alone (`getContextUsage`), so a delegating session's context
-   *     does not appear to fill up faster.
-   */
-  reportUsage?: boolean;
-  /**
-   * Whether the subagent surfaces show an estimated dollar cost next to their
-   * token counts (widget, FleetView, conversation viewer, foreground results,
-   * completion notifications). Defaults to `false`. Applied live.
-   *
-   * Rendered as `~$0.0042` — the tilde marks it as pi's reported estimate
-   * rather than a billed figure, and it is omitted entirely when the model has
-   * no pricing data, so a local model shows tokens and no dollars.
-   *
-   * Independent of `reportUsage`: this one is what a human reads, that one is
-   * what the parent session counts.
-   */
-  showCost?: boolean;
-
-  /**
-   * Whether the widget's running rows name the model driving each agent and the
-   * thinking level it is running at.
-   *
-   * Off by default, unlike the tool result and the conversation viewer, which
-   * show the pair unconditionally: those have a line to themselves, while the
-   * widget row already carries the description, turns, tool uses, tokens and
-   * elapsed time, and every character it gains is one the description loses on a
-   * narrow terminal.
-   */
-  showModel?: boolean;
-  /**
-   * How much of the conversation viewer's transcript renders as Markdown.
-   * Defaults to `assistant`. Applied live — the viewer's `m` key cycles this
-   * same setting, so a choice made in the overlay persists like one made in
-   * `/agents → Settings`.
-   *
-   * Scoped rather than all-or-nothing because the two kinds of content have
-   * different contracts: assistant text is authored as Markdown, while a tool
-   * result is whatever bytes the tool produced. Rendering the latter as
-   * Markdown is lossy in ways that look like the tool misbehaved — see
-   * `ViewerMarkdownMode` for the specific rewrites — so `all` is opt-in.
-   */
-  viewerMarkdown?: ViewerMarkdownMode;
 }
-
-export type ToolDescriptionMode = "full" | "compact" | "custom";
 
 /** Setter hooks used by applySettings to wire persisted values into in-memory state. */
 export interface SettingsAppliers {
@@ -314,34 +156,18 @@ export interface SettingsAppliers {
   setGraceTurns: (n: number) => void;
   setDefaultJoinMode: (mode: JoinMode) => void;
   setBackgroundByDefault: (b: boolean) => void;
-  setSchedulingEnabled: (b: boolean) => void;
   setScopeModels: (enabled: boolean) => void;
   setStrictAgentFiles: (b: boolean) => void;
   setDisableDefaultAgents: (b: boolean) => void;
-  setToolDescriptionMode: (mode: ToolDescriptionMode) => void;
-  setFleetView: (b: boolean) => void;
-  setAgentMentions: (mode: AgentMentionMode) => void;
   setRememberAgents: (b: boolean) => void;
   setWidgetMode: (mode: WidgetMode) => void;
   setOutputTranscript: (b: boolean) => void;
-  setWorktreeIsolation: (b: boolean) => void;
-  setWorkflowsEnabled: (b: boolean) => void;
   setMaxSubagentDepth: (n: number) => void;
   setFallbackSubagent: (v: string | undefined) => void;
-  setReportUsage: (b: boolean) => void;
-  setShowCost: (b: boolean) => void;
-  setShowModel: (b: boolean) => void;
-  setViewerMarkdown: (mode: ViewerMarkdownMode) => void;
 }
 
-/** Emit callback — a subset of `pi.events.emit` to keep helpers testable. */
-export type SettingsEmit = (event: string, payload: unknown) => void;
-
 const VALID_JOIN_MODES: ReadonlySet<string> = new Set<JoinMode>(["async", "group", "smart"]);
-const VALID_TOOL_DESCRIPTION_MODES: ReadonlySet<string> = new Set<ToolDescriptionMode>(["full", "compact", "custom"]);
 const VALID_WIDGET_MODES: ReadonlySet<string> = new Set<WidgetMode>(["all", "background", "off"]);
-const VALID_VIEWER_MARKDOWN_MODES: ReadonlySet<string> = new Set<ViewerMarkdownMode>(["off", "assistant", "all"]);
-const VALID_AGENT_MENTION_MODES: ReadonlySet<string> = new Set<AgentMentionMode>(["model", "direct", "off"]);
 
 // Sanity ceilings — prevent hand-edited configs from asking for values that
 // make no operational sense (e.g. 1e6 concurrent subagents). Permissive enough
@@ -399,9 +225,6 @@ function sanitize(raw: unknown): SubagentsSettings {
   if (typeof r.backgroundByDefault === "boolean") {
     out.backgroundByDefault = r.backgroundByDefault;
   }
-  if (typeof r.schedulingEnabled === "boolean") {
-    out.schedulingEnabled = r.schedulingEnabled;
-  }
   if (typeof r.scopeModels === "boolean") {
     out.scopeModels = r.scopeModels;
   }
@@ -411,19 +234,6 @@ function sanitize(raw: unknown): SubagentsSettings {
   if (typeof r.disableDefaultAgents === "boolean") {
     out.disableDefaultAgents = r.disableDefaultAgents;
   }
-  if (typeof r.toolDescriptionMode === "string" && VALID_TOOL_DESCRIPTION_MODES.has(r.toolDescriptionMode)) {
-    out.toolDescriptionMode = r.toolDescriptionMode as ToolDescriptionMode;
-  }
-  if (typeof r.fleetView === "boolean") {
-    out.fleetView = r.fleetView;
-  }
-  // Was a boolean before the `model` mode existed. A hand-written or
-  // previously-written `true` means "on", which is now the default `model`.
-  if (typeof r.agentMentions === "boolean") {
-    out.agentMentions = r.agentMentions ? "model" : "off";
-  } else if (typeof r.agentMentions === "string" && VALID_AGENT_MENTION_MODES.has(r.agentMentions)) {
-    out.agentMentions = r.agentMentions as AgentMentionMode;
-  }
   if (typeof r.rememberAgents === "boolean") {
     out.rememberAgents = r.rememberAgents;
   }
@@ -432,24 +242,6 @@ function sanitize(raw: unknown): SubagentsSettings {
   }
   if (typeof r.outputTranscript === "boolean") {
     out.outputTranscript = r.outputTranscript;
-  }
-  if (typeof r.worktreeIsolation === "boolean") {
-    out.worktreeIsolation = r.worktreeIsolation;
-  }
-  if (typeof r.reportUsage === "boolean") {
-    out.reportUsage = r.reportUsage;
-  }
-  if (typeof r.showCost === "boolean") {
-    out.showCost = r.showCost;
-  }
-  if (typeof r.showModel === "boolean") {
-    out.showModel = r.showModel;
-  }
-  if (typeof r.viewerMarkdown === "string" && VALID_VIEWER_MARKDOWN_MODES.has(r.viewerMarkdown)) {
-    out.viewerMarkdown = r.viewerMarkdown as ViewerMarkdownMode;
-  }
-  if (typeof r.workflowsEnabled === "boolean") {
-    out.workflowsEnabled = r.workflowsEnabled;
   }
   if (r.fallbackSubagent === false) {
     // The only non-string spelling worth accepting: a boolean would otherwise be
@@ -462,10 +254,6 @@ function sanitize(raw: unknown): SubagentsSettings {
     out.fallbackSubagent = r.fallbackSubagent.trim();
   }
   return out;
-}
-
-function globalPath(): string {
-  return join(getAgentDir(), "subagents.json");
 }
 
 function projectPath(cwd: string): string {
@@ -488,13 +276,13 @@ function readSettingsFile(path: string): SubagentsSettings {
   }
 }
 
-/** Load merged settings: global provides defaults, project overrides. */
+/** Load project settings; missing file → defaults. */
 export function loadSettings(cwd: string = process.cwd()): SubagentsSettings {
-  return { ...readSettingsFile(globalPath()), ...readSettingsFile(projectPath(cwd)) };
+  return readSettingsFile(projectPath(cwd));
 }
 
 /**
- * Write project-local settings. Global is never touched from code.
+ * Write project-local settings.
  * Returns `true` on success, `false` if the write (or mkdir) failed so the
  * caller can surface a warning — persistence isn't fatal but isn't silent.
  */
@@ -521,22 +309,12 @@ export function applySettings(s: SubagentsSettings, appliers: SettingsAppliers):
   if (typeof s.fallbackSubagent === "string") appliers.setFallbackSubagent(s.fallbackSubagent);
   if (s.defaultJoinMode) appliers.setDefaultJoinMode(s.defaultJoinMode);
   if (typeof s.backgroundByDefault === "boolean") appliers.setBackgroundByDefault(s.backgroundByDefault);
-  if (typeof s.schedulingEnabled === "boolean") appliers.setSchedulingEnabled(s.schedulingEnabled);
   if (typeof s.scopeModels === "boolean") appliers.setScopeModels(s.scopeModels);
   if (typeof s.strictAgentFiles === "boolean") appliers.setStrictAgentFiles(s.strictAgentFiles);
   if (typeof s.disableDefaultAgents === "boolean") appliers.setDisableDefaultAgents(s.disableDefaultAgents);
-  if (s.toolDescriptionMode) appliers.setToolDescriptionMode(s.toolDescriptionMode);
-  if (typeof s.fleetView === "boolean") appliers.setFleetView(s.fleetView);
-  if (s.agentMentions) appliers.setAgentMentions(s.agentMentions);
   if (typeof s.rememberAgents === "boolean") appliers.setRememberAgents(s.rememberAgents);
   if (s.widgetMode) appliers.setWidgetMode(s.widgetMode);
   if (typeof s.outputTranscript === "boolean") appliers.setOutputTranscript(s.outputTranscript);
-  if (typeof s.worktreeIsolation === "boolean") appliers.setWorktreeIsolation(s.worktreeIsolation);
-  if (typeof s.reportUsage === "boolean") appliers.setReportUsage(s.reportUsage);
-  if (typeof s.showCost === "boolean") appliers.setShowCost(s.showCost);
-  if (typeof s.showModel === "boolean") appliers.setShowModel(s.showModel);
-  if (s.viewerMarkdown) appliers.setViewerMarkdown(s.viewerMarkdown);
-  if (typeof s.workflowsEnabled === "boolean") appliers.setWorkflowsEnabled(s.workflowsEnabled);
 }
 
 /**
@@ -553,35 +331,21 @@ export function persistToastFor(
     : { message: `${successMsg} (session only; failed to persist)`, level: "warning" };
 }
 
-/**
- * Load merged settings, apply them to in-memory state, and emit the
- * `subagents:settings_loaded` lifecycle event. Returns the loaded settings so
- * callers can log/inspect. Extension init wires this once.
- */
-export function applyAndEmitLoaded(
-  appliers: SettingsAppliers,
-  emit: SettingsEmit,
-  cwd: string = process.cwd(),
-): SubagentsSettings {
+/** Load project settings and apply them to in-memory state. Extension init wires this once. */
+export function applyLoaded(appliers: SettingsAppliers, cwd: string = process.cwd()): SubagentsSettings {
   const settings = loadSettings(cwd);
   applySettings(settings, appliers);
-  emit("subagents:settings_loaded", { settings });
   return settings;
 }
 
 /**
- * Persist a settings snapshot, emit the `subagents:settings_changed` event
- * (regardless of persist outcome so listeners see the in-memory change), and
- * return the toast the UI should display. Event payload carries the `persisted`
- * flag so listeners can react to write failures.
+ * Persist a settings snapshot and return the toast the UI should display.
  */
-export function saveAndEmitChanged(
+export function saveChanged(
   snapshot: SubagentsSettings,
   successMsg: string,
-  emit: SettingsEmit,
   cwd: string = process.cwd(),
 ): { message: string; level: "info" | "warning" } {
   const persisted = saveSettings(snapshot, cwd);
-  emit("subagents:settings_changed", { settings: snapshot, persisted });
   return persistToastFor(successMsg, persisted);
 }

@@ -230,10 +230,6 @@ describe("Agent tool — background resume wiring", () => {
       ctx,
     );
 
-    const created = emitted.find(e => e.event === "subagents:created");
-    expect(created).toBeDefined();
-    expect(created!.payload.type).toBe("general-purpose");
-    expect(created!.payload.id).toBe(id);
     expect(resultText(res)).toContain("Type: general-purpose");
 
     await lifecycle.get("session_shutdown")?.({}, ctx);

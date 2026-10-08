@@ -185,27 +185,6 @@ describe("fallbackSubagent gates dispatch through the real Agent tool", () => {
     expect(runAgent).not.toHaveBeenCalled();
   });
 
-  it("never persists a blank type into a scheduled job", async () => {
-    // `fellBackFrom` is "" for a blank request, and `??` does not treat "" as
-    // nullish — the job would be stored with an empty type and re-fail forever.
-    const { tools, lifecycle } = boot();
-    await lifecycle.get("session_start")({}, ctx());
-
-    const result = await tools.get("Agent").execute(
-      "tc-5",
-      { prompt: "later", description: "blank type", subagent_type: "   ", schedule: "+1h" },
-      undefined, undefined, ctx(),
-    );
-    expect(textOf(result)).toContain("Scheduled");
-
-    const storeDir = join(cwd, ".pi", "subagent-schedules");
-    const jobs = readdirSync(storeDir).flatMap((f) =>
-      JSON.parse(readFileSync(join(storeDir, f), "utf-8")).jobs ?? [],
-    );
-    expect(jobs).toHaveLength(1);
-    expect(jobs[0].subagent_type).toBe("general-purpose");
-  });
-
   it("never blocks resume, which ignores subagent_type entirely", async () => {
     // resume replays a stored session; the type is required by the schema but
     // unused. Gating it would make a live agent unresumable the moment its type
@@ -235,15 +214,4 @@ describe("fallbackSubagent gates dispatch through the real Agent tool", () => {
     expect(textOf(resumed)).not.toContain("Unknown or disabled agent type");
   });
 
-  it("applies the same contract to cross-extension spawns", async () => {
-    // The registry entry is what RPC callers reach; it must not be a way around
-    // the setting. A throw here becomes an error envelope at the RPC boundary.
-    boot();
-    setFallbackSubagent(NO_FALLBACK);
-    const registry = (globalThis as any)[Symbol.for("pi-subagents:manager")];
-
-    expect(() => registry.spawn({}, ctx(), "definitely-missing", "do it", { description: "rpc" }))
-      .toThrow(/Unknown or disabled agent type/);
-    expect(runAgent).not.toHaveBeenCalled();
-  });
 });

@@ -17,19 +17,15 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { BUILTIN_TOOL_NAMES, getAgentConfig, getConfig, getMemoryToolNames, getReadOnlyMemoryToolNames, getToolNamesForType } from "./agent-types.js";
+import { BUILTIN_TOOL_NAMES, getAgentConfig, getConfig, getToolNamesForType } from "./agent-types.js";
 import { runInChildSessionContext } from "./child-context.js";
 import { buildParentContext, extractText } from "./context.js";
 import { DEFAULT_AGENTS } from "./default-agents.js";
 import { detectEnv } from "./env.js";
-import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "./memory.js";
 import { createNestedSubagentTools, getMaxSubagentDepth, type NestedAgentManager } from "./nested-tools.js";
-import { buildAgentPrompt, type PromptExtras } from "./prompts.js";
-import { preloadSkills } from "./skill-loader.js";
-import { createStructuredCapture, createStructuredOutputTool, structuredRetryPrompt } from "./structured-output.js";
+import { buildAgentPrompt } from "./prompts.js";
 import type { SubagentType, ThinkingLevel } from "./types.js";
 import type { LifetimeUsage } from "./usage.js";
-import type { CompiledSchema } from "./workflow/json-schema.js";
 
 /**
  * Tool names registered by THIS extension. Single source of truth so the
@@ -39,7 +35,6 @@ import type { CompiledSchema } from "./workflow/json-schema.js";
  */
 export const SUBAGENT_TOOL_NAMES = {
   AGENT: "Agent",
-  WORKFLOW: "SubagentWorkflow",
   GET_RESULT: "get_subagent_result",
   STEER: "steer_subagent",
 } as const;
@@ -415,29 +410,12 @@ export interface RunOptions {
    */
   resumeSessionFile?: string;
   /**
-   * True when another agent spawned this one. Only top-level agents get a
-   * handle, so only they can be reopened by name — which is the whole reason
-   * `rememberAgents` persists a session at all. A nested run's transcript would
-   * be unreachable by anything, so it stays in memory unless its own
-   * frontmatter asks otherwise.
+   * True when another agent spawned this one. A nested run's transcript stays
+   * in memory — nothing can reopen it — unless its own frontmatter asks
+   * otherwise.
    */
   nested?: boolean;
-  /**
-   * True when a workflow run spawned this agent. Its final text is the value
-   * `agent()` resolves to rather than a report a person reads, and the prompt
-   * says so — but only when `structuredOutput` is unset, since that child
-   * already has a `StructuredOutput` tool to answer through and two competing
-   * "this is how you return your answer" instructions is worse than one.
-   */
-  workflow?: boolean;
   /** Override working directory (e.g. for worktree isolation). */
-  cwd?: string;
-  /**
-   * Directory the worktree copy was created from. Set only when `cwd` points
-   * into a worktree — the prompt then tells the agent to stay in the copy
-   * instead of following the inherited parent prompt back to the main tree.
-   */
-  worktreeBase?: string;
   /**
    * Where .pi config is discovered (project extensions, skills, pi settings,
    * agent memory). Default: same as the working directory. The manager sets
@@ -476,13 +454,6 @@ export interface RunOptions {
    */
   onCompaction?: (info: { reason: "manual" | "threshold" | "overflow"; tokensBefore: number }) => void;
   /**
-   * Make this child report through a `StructuredOutput` tool built from this
-   * schema, and put the validated payload on {@link RunResult.structuredJson}.
-   *
-   * Already compiled by the caller, so a schema this runtime cannot validate
-   * fails at the call that wrote it rather than inside the child.
-   */
-  structuredOutput?: CompiledSchema;
   /** Runtime bridge for opt-in child-safe nested delegation. */
   nestedRuntime?: {
     manager: NestedAgentManager;
@@ -509,18 +480,6 @@ export interface RunResult {
    * stop that produced text (a legitimate truncated answer).
    */
   failure?: string;
-  /**
-   * The validated `StructuredOutput` payload as canonical JSON, when the caller
-   * asked for a schema and the child produced one.
-   *
-   * Deliberately not folded into {@link responseText}: `record.result` picks up
-   * a worktree branch note on the way out, which would leave the caller with
-   * unparseable JSON, and merging the two would make "produced structured
-   * output" indistinguishable from "happened to answer in JSON".
-   */
-  structuredJson?: string;
-  /** Whether the extra structured-output prompt had to be sent. */
-  structuredRetried?: boolean;
 }
 
 /**
@@ -616,8 +575,7 @@ export async function runAgent(
   const config = getConfig(type);
   const agentConfig = getAgentConfig(type);
 
-  // Resolve working directory: worktree override > parent cwd
-  const effectiveCwd = options.cwd ?? ctx.cwd;
+  const effectiveCwd = ctx.cwd;
   // Filesystem work happens in effectiveCwd; config discovery in configCwd.
   // They differ only for SpawnOptions.cwd spawns (config stays with the parent).
   const configCwd = options.configCwd ?? effectiveCwd;
@@ -627,64 +585,29 @@ export async function runAgent(
   // Get parent system prompt for append-mode agents
   const parentSystemPrompt = ctx.getSystemPrompt();
 
-  // Build prompt extras (memory, skill preloading)
-  const extras: PromptExtras = {};
-  if (options.worktreeBase) extras.worktreeBase = options.worktreeBase;
-  if (options.workflow && !options.structuredOutput) extras.workflowChild = true;
 
-  // Resolve extensions/skills: isolated overrides to false
+  // Resolve extensions: isolated overrides to false
   const extensions = options.isolated ? false : config.extensions;
   // Nulling excludes under isolated also suppresses the orphaned-exclude warning —
   // isolation is an intentional override, not a misconfiguration.
   const excludeExtensions = options.isolated ? undefined : config.excludeExtensions;
-  const skills = options.isolated ? false : config.skills;
 
-  // Skill preloading: when skills is string[], preload their content into prompt
-  if (Array.isArray(skills)) {
-    const loaded = preloadSkills(skills, configCwd);
-    if (loaded.length > 0) {
-      extras.skillBlocks = loaded;
-    }
-  }
 
   let toolNames = getToolNamesForType(type);
 
-  // Persistent memory: detect write capability and branch accordingly.
-  // Account for disallowedTools — a tool in the base set but on the denylist is not truly available.
-  if (agentConfig?.memory) {
-    const existingNames = new Set(toolNames);
-    const denied = agentConfig.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined;
-    const effectivelyHas = (name: string) => existingNames.has(name) && !denied?.has(name);
-    const hasWriteTools = effectivelyHas("write") || effectivelyHas("edit");
-
-    if (hasWriteTools) {
-      // Read-write memory: add any missing memory tool names (read/write/edit)
-      const extraNames = getMemoryToolNames(existingNames);
-      if (extraNames.length > 0) toolNames = [...toolNames, ...extraNames];
-      extras.memoryBlock = buildMemoryBlock(agentConfig.name, agentConfig.memory, configCwd);
-    } else {
-      // Read-only memory: only add read tool name, use read-only prompt
-      const extraNames = getReadOnlyMemoryToolNames(existingNames);
-      if (extraNames.length > 0) toolNames = [...toolNames, ...extraNames];
-      extras.memoryBlock = buildReadOnlyMemoryBlock(agentConfig.name, agentConfig.memory, configCwd);
-    }
-  }
 
   // Build system prompt from agent config
   let systemPrompt: string;
   if (agentConfig) {
-    systemPrompt = buildAgentPrompt(agentConfig, effectiveCwd, env, parentSystemPrompt, extras);
+    systemPrompt = buildAgentPrompt(agentConfig, effectiveCwd, env, parentSystemPrompt);
   } else {
     // Unknown type fallback: spread the canonical general-purpose config (defensive —
     // unreachable in practice since index.ts resolves unknown types before calling runAgent).
     const fallback = DEFAULT_AGENTS.get("general-purpose");
     if (!fallback) throw new Error(`No fallback config available for unknown type "${type}"`);
-    systemPrompt = buildAgentPrompt({ ...fallback, name: type }, effectiveCwd, env, parentSystemPrompt, extras);
+    systemPrompt = buildAgentPrompt({ ...fallback, name: type }, effectiveCwd, env, parentSystemPrompt);
   }
 
-  // When skills is string[], we've already preloaded them into the prompt.
-  // Still pass noSkills: true since we don't need the skill loader to load them again.
-  const noSkills = skills === false || Array.isArray(skills);
 
   const agentDir = getAgentDir();
 
@@ -750,7 +673,7 @@ export async function runAgent(
     noExtensions,
     additionalExtensionPaths,
     extensionsOverride,
-    noSkills,
+    noSkills: true,
     noPromptTemplates: true,
     noThemes: true,
     noContextFiles: true,
@@ -865,27 +788,12 @@ export async function runAgent(
     : [];
   const nestedToolNames = new Set(nestedTools.map(tool => tool.name));
 
-  // The `agent({ schema })` contract: this child reports its answer by calling
-  // StructuredOutput, and `structuredJson` below is what the caller reads. The
-  // schema was already compiled by whoever asked for it, so a bad one failed
-  // before any of this ran.
-  const structuredCapture = options.structuredOutput ? createStructuredCapture() : undefined;
-  const structuredTools = options.structuredOutput && structuredCapture
-    ? [createStructuredOutputTool(options.structuredOutput, structuredCapture)]
-    : [];
-  const structuredToolNames = new Set(structuredTools.map(tool => tool.name));
-  // Re-admitted together at every gate below. Kept as one set so a new injected
-  // tool cannot be added to some of the three gates and forgotten at the rest.
-  //
-  // `disallowed_tools` is applied HERE rather than at the gates, because the two
-  // kinds answer to it differently: a nested delegation tool is an opt-in the
-  // agent's own frontmatter can take back, while StructuredOutput exists only
-  // because this call asked for a schema — removing it would make the request
-  // unsatisfiable by construction rather than merely restricted.
-  const readmitToolNames = new Set([
-    ...[...nestedToolNames].filter(name => !disallowedSet?.has(name)),
-    ...structuredToolNames,
-  ]);
+  // Re-admitted at every gate below: a nested delegation tool is an opt-in the
+  // agent's own frontmatter can take back via `disallowed_tools`, so the filter
+  // is applied HERE rather than at the gates.
+  const readmitToolNames = new Set(
+    [...nestedToolNames].filter(name => !disallowedSet?.has(name)),
+  );
 
   // ─── Tool scoping ───────────────────────────────────────────────────────
   //
@@ -926,11 +834,6 @@ export async function runAgent(
         (t) => !EXCLUDED_TOOL_NAMES.includes(t) && !disallowedSet?.has(t),
       ),
       ...[...nestedToolNames].filter((t) => !disallowedSet?.has(t)),
-      // Not filtered through `disallowedSet`, unlike the nested tools above:
-      // the caller asked for a schema, and removing the only tool that can
-      // satisfy it would make the request unsatisfiable by construction rather
-      // than merely restricted.
-      ...structuredToolNames,
     ];
   } else {
     // Deny the orchestration tools EXCEPT the nested ones this agent opted into —
@@ -944,9 +847,8 @@ export async function runAgent(
     }
     if (disallowedSet) {
       // disallowed_tools wins even over an opt-in nested tool of the same name.
-      // Not over StructuredOutput, though — see the allowlist branch above.
       for (const name of disallowedSet) {
-        if (!structuredToolNames.has(name)) denyTools.add(name);
+        denyTools.add(name);
       }
     }
     sessionExcludeTools = [...denyTools];
@@ -995,7 +897,7 @@ export async function runAgent(
     ...(parentModelRuntime !== undefined && { modelRuntime: parentModelRuntime as never }),
     model,
     tools: sessionTools,
-    customTools: [...nestedTools, ...structuredTools],
+    customTools: nestedTools,
     resourceLoader: loader,
   };
   if (sessionExcludeTools) {
@@ -1108,20 +1010,9 @@ export async function runAgent(
   // Boundary for the history fallback: only assistant text produced from here
   // on counts as this run's output (a fresh session, so usually 0).
   const startLen = session.messages.length;
-  let structuredRetried = false;
   try {
     await session.prompt(effectivePrompt);
 
-    // One more prompt when a schema was asked for and nothing usable came back
-    // — the model answered in prose, or only ever called the tool invalidly.
-    // Inside this `try`, so the turn tracking, the text collector and above all
-    // the abort forwarding are still live: torn down first, a retry would be
-    // unkillable.
-    if (structuredCapture !== undefined && structuredCapture.json === undefined
-      && !aborted && options.signal?.aborted !== true) {
-      structuredRetried = true;
-      await session.prompt(structuredRetryPrompt(structuredCapture));
-    }
   } finally {
     unsubTurns();
     collector.unsubscribe();
@@ -1129,22 +1020,12 @@ export async function runAgent(
   }
 
   const responseText = collector.getText().trim() || getLastAssistantText(session, startLen);
-  // A child asked for structured output that never gave any has failed, however
-  // articulate its prose was. Reported through `failure` so it travels the same
-  // path as a provider error rather than arriving as a successful empty answer.
-  const structuredFailure = structuredCapture !== undefined && structuredCapture.json === undefined
-    ? structuredCapture.lastError !== undefined
-      ? `The agent's StructuredOutput call did not match the required schema: ${structuredCapture.lastError}`
-      : "The agent did not report its answer through StructuredOutput."
-    : undefined;
   return {
     responseText,
     session,
     aborted,
     steered: softLimitReached,
-    failure: finalTurnError(session, startLen) ?? structuredFailure,
-    ...(structuredCapture?.json !== undefined ? { structuredJson: structuredCapture.json } : {}),
-    ...(structuredRetried ? { structuredRetried } : {}),
+    failure: finalTurnError(session, startLen),
   };
 }
 

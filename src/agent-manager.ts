@@ -15,31 +15,16 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { statSync } from "node:fs";
-import { isAbsolute } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { resumeAgent, runAgent, type ToolActivity } from "./agent-runner.js";
-import { assignHandle, handleBase } from "./mention.js";
 import { describeModel } from "./model-resolver.js";
-import type { AgentInvocation, AgentRecord, AgentTombstone, IsolationMode, MentionResolution, SubagentType, ThinkingLevel } from "./types.js";
-import { addUsage, type LifetimeUsage } from "./usage.js";
-import type { CompiledSchema } from "./workflow/json-schema.js";
-import { cleanupWorktree, createWorktree, isWorktreeIsolationEnabled, pruneWorktrees, } from "./worktree.js";
+import type { AgentInvocation, AgentRecord, SubagentType, ThinkingLevel } from "./types.js";
+import { addUsage } from "./usage.js";
 
 export type OnAgentComplete = (record: AgentRecord) => void;
 export type OnAgentStart = (record: AgentRecord) => void;
 export type OnAgentCompact = (record: AgentRecord, info: CompactionInfo) => void;
-/**
- * Fired once per assistant `message_end`, for EVERY agent this manager owns —
- * top-level and nested alike, spawns and resumes. The one place where each
- * message is seen exactly once: `AgentRecord.lifetimeUsage` is deliberately
- * double-booked into ancestors (see `nested-tools.ts`) so a hidden child's spend
- * shows up on the record a human can see, which makes those records useless as
- * a basis for anything that must not count a message twice — parent-session
- * accounting above all.
- */
-export type OnAgentUsage = (record: AgentRecord, usage: LifetimeUsage) => void;
 export type CompactionInfo = { reason: "manual" | "threshold" | "overflow"; tokensBefore: number };
 
 /**
@@ -66,34 +51,7 @@ const DEFAULT_MAX_CONCURRENT = 10;
  */
 const DEFAULT_MAX_CONCURRENT_FOREGROUND = 0;
 
-/**
- * How many evicted agents stay addressable by name. Only a bound on memory —
- * a session that spawns hundreds of agents shouldn't retain every one — and
- * far above the handful anyone keeps in their head.
- */
-const MAX_TOMBSTONES = 100;
 
-/**
- * Validate a caller-supplied SpawnOptions.cwd. `undefined`/`null` mean "unset"
- * (parent cwd). Anything else must be an absolute path to an existing
- * directory — curated errors instead of TypeErrors from path/fs internals
- * (RPC callers send arbitrary JSON: null, numbers, file paths).
- */
-function assertValidSpawnCwd(cwd: unknown): asserts cwd is string | undefined | null {
-  if (cwd == null) return;
-  if (typeof cwd !== "string" || !isAbsolute(cwd)) {
-    throw new Error(`SpawnOptions.cwd must be an absolute path: "${String(cwd)}"`);
-  }
-  let isDirectory = false;
-  try {
-    isDirectory = statSync(cwd).isDirectory();
-  } catch {
-    throw new Error(`SpawnOptions.cwd does not exist: "${cwd}"`);
-  }
-  if (!isDirectory) {
-    throw new Error(`SpawnOptions.cwd is not a directory: "${cwd}"`);
-  }
-}
 
 /**
  * Whether a record occupies one of the `maxConcurrent` background slots.
@@ -105,24 +63,24 @@ function assertValidSpawnCwd(cwd: unknown): asserts cwd is string | undefined | 
  * spawn costs it a turn, which is unbounded when max turns is unlimited.
  */
 function occupiesPoolSlot(
-  record: Pick<AgentRecord, "isBackground" | "parentAgentId" | "workflowId">,
+  record: Pick<AgentRecord, "isBackground" | "parentAgentId">,
 ): boolean {
   return !!record.isBackground && isTopLevelAgent(record);
 }
 
 /**
- * Whether a record is one of the session's own agents, rather than something
- * another agent or a workflow owns.
+ * Whether a record is one of the session's own agents, rather than a nested
+ * child another agent owns.
  *
- * The single definition behind every user-facing surface — the fleet list, the
- * widget, the `/agents` menus, `@handle` resolution, and the completion events
- * and session entries. An owned child reports through its owner, so surfacing
- * it separately would double-count the same work in the places a person reads.
+ * The single definition behind every user-facing surface — the widget, the
+ * `/agents` menus, and the completion notifications. An owned child reports
+ * through its owner, so surfacing it separately would double-count the same
+ * work in the places a person reads.
  */
 export function isTopLevelAgent(
-  record: Pick<AgentRecord, "parentAgentId" | "workflowId">,
+  record: Pick<AgentRecord, "parentAgentId">,
 ): boolean {
-  return record.parentAgentId === undefined && record.workflowId === undefined;
+  return record.parentAgentId === undefined;
 }
 
 /**
@@ -150,7 +108,7 @@ export function isTopLevelAgent(
  * own fan-out is limited by nothing but its turn budget.
  */
 function occupiesForegroundSlot(
-  record: Pick<AgentRecord, "blocking" | "parentAgentId" | "workflowId">,
+  record: Pick<AgentRecord, "blocking" | "parentAgentId">,
 ): boolean {
   return !!record.blocking && isTopLevelAgent(record);
 }
@@ -169,30 +127,12 @@ interface SpawnArgs {
 interface SpawnOptions {
   description: string;
   /**
-   * Optional memorable name for this instance, becoming a second handle
-   * (`@auth-audit`) alongside the type-derived one. Slugged, not validated —
-   * anything unusable degrades via `handleBase` rather than failing the spawn.
-   */
-  name?: string;
-  /**
    * Reopen this pi session file instead of starting a fresh conversation, so a
-   * mention of an evicted agent continues where it left off. The agent's
+   * a later run continues where the previous one left off. The agent's
    * definition is still resolved from its type, so the continuation runs under
    * the type's CURRENT config.
    */
   resumeSessionFile?: string;
-  /**
-   * Take an evicted agent's names back verbatim instead of allocating fresh
-   * ones, so a resumed conversation keeps the handle the user just typed —
-   * `handleBase(type)` cannot reproduce a numbered `explore-2`. Safe without an
-   * `assignHandle` pass because tombstoned names are excluded from allocation
-   * (`takenHandles`), so nothing live can be holding them.
-   *
-   * Internal capability, like `resumeSessionFile`: a forged handle would
-   * duplicate a live agent's name and make `resolveMention` ambiguous, so
-   * `spawnTopLevel` strips it from anything a caller sends.
-   */
-  reclaim?: { handle: string; alias?: string };
   model?: Model<any>;
   maxTurns?: number;
   isolated?: boolean;
@@ -205,7 +145,7 @@ interface SpawnOptions {
    * is still COUNTED once the run starts, so a bypassing spawn transiently
    * exceeds the limit rather than being invisible to it.
    *
-   * Used by the scheduler, so a fired job can't be deferred past its trigger
+   * Used by the `/agents` agent-file generator, which has no way to
    * window, and by the `/agents` agent-file generator, which has no way to
    * cancel a wait (see its call site).
    */
@@ -218,47 +158,6 @@ interface SpawnOptions {
    */
   blocking?: boolean;
   /**
-   * The workflow run this child belongs to, when a workflow spawned it.
-   *
-   * Ownership, not decoration. A workflow's children are the workflow's — they
-   * report through its card, its notification and its dialog, so they are
-   * filtered out of every top-level surface exactly as nested children are, and
-   * they take no `maxConcurrent` slot: the run has its own concurrency cap, and
-   * counting them twice would let one workflow starve the whole session.
-   */
-  workflowId?: string;
-  /**
-   * Make the child report through a `StructuredOutput` tool built from this
-   * compiled schema. Set only by the workflow host, for `agent({ schema })`.
-   */
-  structuredOutput?: CompiledSchema;
-  /** Isolation mode — "worktree" creates a temp git worktree for the agent. */
-  isolation?: IsolationMode;
-  /**
-   * Working directory for the agent (absolute path). Default: parent session
-   * cwd. The agent's tools operate here, but .pi config (extensions, skills,
-   * settings, memory) still loads from the parent session's project — the
-   * target directory's `.pi` extensions never execute. With isolation:
-   * "worktree", the worktree is created FROM this directory and the result
-   * branch lands in that repo.
-   */
-  cwd?: string;
-  /**
-   * Last chance to look at an isolated agent's worktree, awaited immediately
-   * before it is committed to a branch and removed.
-   *
-   * Exists because that removal happens inside the settle path, before
-   * `spawnAndWait` resolves: by the time a caller has the finished record, the
-   * directory the child actually wrote in is gone. Anything that must inspect
-   * or verify that tree — a workflow `gate` is the motivating case — has to run
-   * here or it silently inspects the main tree instead.
-   *
-   * Fires only on the normal settle path, and only when a worktree was created.
-   * Not on the error path and not on the stop-during-copy guard: those are
-   * already failing, and delaying cleanup there would leak a copy for no gain.
-   * A rejection is swallowed — the hook can never keep the worktree alive.
-   */
-  onBeforeWorktreeCleanup?: (worktreePath: string) => Promise<void>;
   /** Resolved invocation snapshot captured for UI display. */
   invocation?: AgentInvocation;
   /** Parent abort signal — when aborted, the subagent is also stopped. */
@@ -366,12 +265,8 @@ export class AgentManager {
   private onComplete?: OnAgentComplete;
   private onStart?: OnAgentStart;
   private onCompact?: OnAgentCompact;
-  private onUsage?: OnAgentUsage;
   private maxConcurrent: number;
   private maxConcurrentForeground = DEFAULT_MAX_CONCURRENT_FOREGROUND;
-  /** Base repos worktrees were created from — so dispose() can prune them all,
-   *  not just the parent repo (caller-supplied cwd can target other repos). */
-  private worktreeRepos = new Set<string>();
 
   /**
    * Startup phases, keyed by agent id. `spawn()` still returns synchronously,
@@ -384,13 +279,6 @@ export class AgentManager {
    */
   private startups = new Map<string, Promise<void>>();
 
-  /**
-   * Evicted agents that can still be reached by name, keyed by handle. Outlives
-   * the 10-minute record cleanup — that timer exists to bound memory, not to
-   * expire a conversation the user might still want — and is cleared alongside
-   * completed records on session start/switch.
-   */
-  private tombstones = new Map<string, AgentTombstone>();
 
   /**
    * Agents waiting to start, tagged with the pool they wait on. One queue for
@@ -417,12 +305,10 @@ export class AgentManager {
     maxConcurrent = DEFAULT_MAX_CONCURRENT,
     onStart?: OnAgentStart,
     onCompact?: OnAgentCompact,
-    onUsage?: OnAgentUsage,
   ) {
     this.onComplete = onComplete;
     this.onStart = onStart;
     this.onCompact = onCompact;
-    this.onUsage = onUsage;
     this.maxConcurrent = maxConcurrent;
     // Cleanup completed agents after 10 minutes (but keep sessions for resume)
     this.cleanupInterval = setInterval(() => this.cleanup(), 60_000);
@@ -481,10 +367,8 @@ export class AgentManager {
    * Spawn an agent and return its ID immediately (for background use).
    * If the concurrency limit is reached, the agent is queued.
    *
-   * The id comes back synchronously, but with `isolation: "worktree"` the agent
-   * is not running yet when it does — the repo copy is an awaited git call.
-   * Callers that must fail a tool call on a startup failure await
-   * `awaitStartup(id)`; everyone else sees it on the record (status "error").
+   * A startup failure is delivered through the record (status "error") and
+   * `awaitStartup(id)` rather than thrown out of `spawn()`.
    */
   spawn(
     pi: ExtensionAPI,
@@ -493,29 +377,13 @@ export class AgentManager {
     prompt: string,
     options: SpawnOptions,
   ): string {
-    // Validate before the queue branch — a queued spawn should fail at the
-    // call, not minutes later at drain. Throw (not warn): programmatic callers
-    // can fix and retry; the RPC layer converts throws into error envelopes.
-    assertValidSpawnCwd(options.cwd);
 
     const id = randomUUID().slice(0, 17);
     const abortController = new AbortController();
     const record: AgentRecord = {
       id,
       type,
-      // Owned children — nested, or a workflow's — are filtered out of every
-      // top-level surface, so no handle: nothing can address them and they must
-      // not consume a name a top-level sibling could otherwise take.
-      handle: !isTopLevelAgent(options)
-        ? undefined
-        // A reclaimed handle is used as-is: it belongs to the conversation this
-        // spawn is reopening, and re-deriving it would lose the numbering.
-        : options.reclaim?.handle ?? assignHandle(handleBase(type), this.takenHandles()),
       description: options.description,
-      // Reclaimed here, or filled in below from `name` — in which case it must
-      // see the handle this record just took, since both come out of the same
-      // namespace.
-      alias: isTopLevelAgent(options) ? options.reclaim?.alias : undefined,
       // Overwritten below when the spawn is actually queued; a foreground spawn
       // that queues flips to "queued" there rather than being guessed at here,
       // since the pool decision needs the finished record.
@@ -538,17 +406,10 @@ export class AgentManager {
       invocation: options.invocation,
       depth: options.depth ?? 1,
       parentAgentId: options.parentAgentId,
-      workflowId: options.workflowId,
       maxSubagentDepth: options.maxSubagentDepth,
       rootSessionId: options.rootSessionId,
     };
     this.agents.set(id, record);
-    // After the insert, so `takenHandles()` already counts this record's own
-    // handle — a spawn named after its own type gets `explore-2`, not a
-    // duplicate `explore` that would make resolution ambiguous.
-    if (record.handle !== undefined && record.alias === undefined && options.name !== undefined) {
-      record.alias = assignHandle(handleBase(options.name), this.takenHandles());
-    }
 
     const args: SpawnArgs = { pi, ctx, type, prompt, options };
 
@@ -668,14 +529,6 @@ export class AgentManager {
     record: AgentRecord,
     { pi, ctx, type, prompt, options }: SpawnArgs,
   ) {
-    // Re-validate a caller-supplied cwd: queued spawns can start minutes after
-    // spawn()'s check, and the directory may be gone by then (TOCTOU). Same
-    // curated errors; drainQueue parks a throw on the record as an error.
-    assertValidSpawnCwd(options.cwd);
-    // Single resolution point for the caller-supplied cwd — the worktree base
-    // repo and both cleanup calls below MUST agree on this value forever.
-    const customCwd = options.cwd ?? undefined; // null (RPC "unset") → undefined
-    const baseCwd = customCwd ?? ctx.cwd;
 
     // Take the running state — and with it the concurrency slot — BEFORE the
     // first await. Creating a worktree is an awaited git call, and drainQueue
@@ -689,57 +542,13 @@ export class AgentManager {
     // `/agents → Settings` mid-run, so recomputing it at settle time would
     // decrement a pool this run never charged (counter underflow, limit
     // silently lifted) or skip the decrement for one it did (leaked slot —
-    // every later blocking spawn queues forever). The two startup exits below
-    // never reach `settleRun`, so they hand the slot back themselves.
     const pool = this.poolFor(record);
-    const releaseSlot = () => {
-      if (pool === "background") this.runningBackground--;
-      else if (pool === "foreground") this.runningForeground--;
-    };
     record.status = "running";
     record.startedAt = Date.now();
     record.startGate = undefined;
     if (pool === "background") this.runningBackground++;
     else if (pool === "foreground") this.runningForeground++;
 
-    // Worktree isolation: try to create a temporary git worktree. Strict —
-    // fail loud if not possible (no silent fallback to main tree). Done BEFORE
-    // the run is kicked off so a failure doesn't leave a half-running agent.
-    // The project switch is enforced here as well as at the tool boundary
-    // because cross-extension RPC forwards its options unvalidated — a schema
-    // that omits the field can't stop a caller that never saw the schema.
-    let worktreeCwd: string | undefined;
-    if (options.isolation === "worktree" && isWorktreeIsolationEnabled()) {
-      const wt = await createWorktree(pi, baseCwd, id);
-      if (!wt) {
-        releaseSlot();
-        throw new Error(
-          'Cannot run with isolation: "worktree" — not a git repo, no commits yet, or `git worktree add` failed. ' +
-          'Initialize git and commit at least once, or omit `isolation`.',
-        );
-      }
-      record.worktree = wt;
-      // workPath preserves subdirectory scoping for caller-supplied cwds: a
-      // cwd deep in a monorepo maps to the same subdir inside the copy, not
-      // the copied repo's root. Plain worktree spawns keep the historical
-      // behavior (agent at the copy's root) — moving them to workPath would
-      // also move .pi config discovery when the parent session sits in a repo
-      // subdirectory, silently dropping extensions/skills.
-      worktreeCwd = customCwd !== undefined ? wt.workPath : wt.path;
-      this.worktreeRepos.add(baseCwd);
-
-      // No longer "running" means a stop landed while the copy was being made
-      // (abort(), abortAll()) — a window that did not exist when creation was
-      // synchronous. The record is already terminal, so launching the run would
-      // burn tokens on work nobody is waiting for: discard the fresh (and by
-      // definition unchanged) worktree instead.
-      if (record.status !== "running") {
-        releaseSlot();
-        record.worktreeResult = await cleanupWorktree(pi, baseCwd, wt, options.description);
-        this.drainQueue();
-        return;
-      }
-    }
 
     this.onStart?.(record);
 
@@ -766,20 +575,9 @@ export class AgentManager {
       isolated: options.isolated,
       inheritContext: options.inheritContext,
       thinkingLevel: options.thinkingLevel,
-      structuredOutput: options.structuredOutput,
       resumeSessionFile: options.resumeSessionFile,
       nested: options.parentAgentId !== undefined,
-      workflow: options.workflowId !== undefined,
-      // Worktree wins for the working dir (the agent must run in the copy —
-      // which, with a custom cwd, was created from that target). Config stays
-      // with the parent project when a caller-supplied cwd is in play; it must
-      // stay undefined otherwise so plain worktree runs keep resolving config
-      // (incl. relative extension paths and memory) inside the worktree copy.
-      cwd: worktreeCwd ?? customCwd,
-      // Set iff a worktree was created (see above) — names the directory the
-      // copy came from, so the prompt can tell the agent not to work there.
-      worktreeBase: worktreeCwd ? baseCwd : undefined,
-      configCwd: options.configCwd ?? (customCwd !== undefined ? ctx.cwd : undefined),
+      configCwd: options.configCwd,
       signal: record.abortController!.signal,
       onToolActivity: (activity) => {
         if (activity.type === "end") record.toolUses++;
@@ -789,7 +587,6 @@ export class AgentManager {
       onTextDelta: options.onTextDelta,
       onAssistantUsage: (usage) => {
         addUsage(record.lifetimeUsage, usage);
-        this.onUsage?.(record, usage);
         options.onAssistantUsage?.(usage);
       },
       onCompaction: (info) => {
@@ -846,7 +643,7 @@ export class AgentManager {
         options.onSessionCreated?.(session);
       },
     })
-      .then(async ({ responseText, session, aborted, steered, failure, structuredJson, structuredRetried }) => {
+      .then(async ({ responseText, session, aborted, steered, failure }) => {
         // Don't overwrite status if externally stopped via abort()
         if (record.status !== "stopped") {
           // Precedence: a hard abort keeps "aborted"; then a failed final turn
@@ -862,11 +659,6 @@ export class AgentManager {
           }
         }
         record.result = responseText;
-        // Kept beside `result`, never inside it: `result` is prose meant for a
-        // reader — it is previewed, transcribed, and appended to below — while
-        // this is a machine-readable payload one caller asked for by schema.
-        record.structuredJson = structuredJson;
-        record.structuredRetried = structuredRetried;
         record.session = session;
         record.completedAt ??= Date.now();
 
@@ -878,29 +670,6 @@ export class AgentManager {
           record.outputCleanup = undefined;
         }
 
-        // Clean up worktree if used
-        if (record.worktree) {
-          // The one moment the child's tree still exists and the child is done
-          // writing to it. try/catch, not decoration: a hook that throws must
-          // not leave the worktree behind.
-          if (options.onBeforeWorktreeCleanup) {
-            try {
-              await options.onBeforeWorktreeCleanup(record.worktree.path);
-            } catch { /* ignore — never block cleanup */ }
-          }
-          const wtResult = await cleanupWorktree(pi, baseCwd, record.worktree, options.description);
-          record.worktreeResult = wtResult;
-          if (wtResult.hasChanges && wtResult.branch) {
-            // With a caller-supplied cwd the branch lives in THAT repo, not the
-            // parent session's — say so, or the orchestrator merges in the wrong repo.
-            const repoNote = customCwd !== undefined ? ` in \`${baseCwd}\`` : "";
-            // Appended to the prose only. A structured child's caller parses
-            // `structuredJson`, which stays untouched — but `result` is also
-            // what a human reads, so the note still belongs on it.
-            record.result = (record.result ?? "") +
-              `\n\n---\nChanges saved to branch \`${wtResult.branch}\`${repoNote}. Merge with: \`git merge ${wtResult.branch}\`${customCwd !== undefined ? ` (run in \`${baseCwd}\`)` : ""}`;
-          }
-        }
 
         this.abortOwnedChildren(id);
 
@@ -923,13 +692,6 @@ export class AgentManager {
           record.outputCleanup = undefined;
         }
 
-        // Best-effort worktree cleanup on error
-        if (record.worktree) {
-          try {
-            const wtResult = await cleanupWorktree(pi, baseCwd, record.worktree, options.description);
-            record.worktreeResult = wtResult;
-          } catch { /* ignore cleanup errors */ }
-        }
 
         this.abortOwnedChildren(id);
 
@@ -1181,7 +943,6 @@ export class AgentManager {
         },
         onAssistantUsage: (usage) => {
           addUsage(record.lifetimeUsage, usage);
-          this.onUsage?.(record, usage);
           options?.onAssistantUsage?.(usage);
         },
         onCompaction: (info) => {
@@ -1272,7 +1033,6 @@ export class AgentManager {
       },
       onAssistantUsage: (usage) => {
         addUsage(record.lifetimeUsage, usage);
-        this.onUsage?.(record, usage);
         options.onAssistantUsage?.(usage);
       },
       onCompaction: (info) => {
@@ -1334,69 +1094,9 @@ export class AgentManager {
   }
 
   /** Handles already in use, so a fresh spawn can pick an unclaimed one. */
-  private takenHandles(): Set<string> {
-    const taken = new Set<string>();
-    for (const record of this.agents.values()) {
-      if (record.handle) taken.add(record.handle);
-      if (record.alias) taken.add(record.alias);
-    }
-    // Tombstones hold their names too: an evicted `@explore` is still
-    // resurrectable, so a later Explore must become `explore-2` rather than
-    // shadowing a conversation the user can still reach.
-    for (const entry of this.tombstones.values()) {
-      taken.add(entry.handle);
-      if (entry.alias) taken.add(entry.alias);
-    }
-    return taken;
-  }
 
-  /**
-   * Resolve an `@name` from the prompt. Matches a top-level agent's handle
-   * case-insensitively, preferring one that can still be steered and otherwise
-   * the most recently started (which is the one a resume should continue), then
-   * falls back to an exact agent id so `@<agentId>` works too.
-   */
-  resolveMention(name: string): MentionResolution | undefined {
-    const wanted = name.toLowerCase();
-    let fallback: AgentRecord | undefined;
-    for (const record of this.agents.values()) {
-      if (record.parentAgentId !== undefined) continue;
-      // Handle and alias share one namespace, so at most one agent answers a
-      // name and it makes no difference which of the two matched.
-      if (record.handle?.toLowerCase() !== wanted && record.alias?.toLowerCase() !== wanted) continue;
-      if (record.status === "running" || record.status === "queued") return { kind: "live", record };
-      if (!fallback || record.startedAt > fallback.startedAt) fallback = record;
-    }
-    if (fallback) return { kind: "live", record: fallback };
-    const byId = this.agents.get(name);
-    if (byId?.parentAgentId === undefined && byId !== undefined) return { kind: "live", record: byId };
-    // Only once nothing live answers: a tombstone is a conversation to reopen,
-    // and reopening one while its record still exists would fork the session.
-    for (const entry of this.tombstones.values()) {
-      if (entry.handle.toLowerCase() === wanted || entry.alias?.toLowerCase() === wanted || entry.id === name) {
-        return { kind: "tombstone", entry };
-      }
-    }
-    return undefined;
-  }
 
-  /**
-   * Forget an evicted agent, by handle. For the case where its session file has
-   * gone: the entry can then only ever fail, while still holding the name
-   * against the type that would otherwise start a fresh agent under it.
-   *
-   * A *successful* resume does not drop its tombstone — the live record it
-   * creates already wins in `resolveMention`, and overwrites the entry in place
-   * when it is itself evicted.
-   */
-  dropTombstone(handle: string): void {
-    this.tombstones.delete(handle);
-  }
 
-  /** Evicted agents whose conversation can still be reopened, newest first. */
-  listTombstones(): AgentTombstone[] {
-    return [...this.tombstones.values()].sort((a, b) => b.completedAt - a.completedAt);
-  }
 
   listAgents(): AgentRecord[] {
     return [...this.agents.values()].sort(
@@ -1427,7 +1127,6 @@ export class AgentManager {
 
   /** Dispose a record's session and remove it from the map. */
   private removeRecord(id: string, record: AgentRecord): void {
-    this.tombstone(record);
     const session = record.session;
     // Detached before the shutdown starts, so the record leaves the map at once and
     // nothing can observe a session that is half torn down.
@@ -1442,30 +1141,6 @@ export class AgentManager {
     void shutdownChildSession(session);
   }
 
-  /**
-   * Preserve enough of a departing record for `@handle` to reopen its
-   * conversation later. Nothing to keep unless it has both a handle to be
-   * addressed by and a session file to reopen — an in-memory session leaves no
-   * transcript, so the mention would have nothing to continue from.
-   */
-  private tombstone(record: AgentRecord): void {
-    if (!record.handle || !record.sessionFile) return;
-    this.tombstones.set(record.handle, {
-      handle: record.handle,
-      alias: record.alias,
-      id: record.id,
-      type: record.type,
-      description: record.description,
-      sessionFile: record.sessionFile,
-      completedAt: record.completedAt ?? Date.now(),
-    });
-    // Bound the memory a long session can accumulate. Oldest first, since the
-    // agent someone still wants to reach is the one they used most recently.
-    while (this.tombstones.size > MAX_TOMBSTONES) {
-      const oldest = [...this.tombstones.values()].reduce((a, b) => (a.completedAt <= b.completedAt ? a : b));
-      this.tombstones.delete(oldest.handle);
-    }
-  }
 
   private cleanup() {
     const cutoff = Date.now() - 10 * 60_000;
@@ -1488,13 +1163,6 @@ export class AgentManager {
       if (skipUnconsumed && !record.resultConsumed) continue;
       this.removeRecord(id, record);
     }
-    // Unconditional: both callers are session boundaries (`session_start` and
-    // `session_before_switch`), and `skipUnconsumed` only spares records whose
-    // results the LLM has yet to read — it does not make the sweep partial in
-    // the sense that matters here. A new session means new handles, or
-    // `@explore` would silently reach an agent the user never started. Claude
-    // Code resets its registry on `/clear` for the same reason.
-    this.tombstones.clear();
   }
 
   /** Whether any agents are still running or queued. */
@@ -1549,12 +1217,7 @@ export class AgentManager {
     }
   }
 
-  /**
-   * @param pi - Needed to run `git worktree prune`, which is async now and so
-   *   cannot be reached through a stored spawn argument at shutdown. Omitting
-   *   it (tests, teardown of a manager that never spawned) skips the prune.
-   */
-  async dispose(pi?: ExtensionAPI): Promise<void> {
+  async dispose(): Promise<void> {
     clearInterval(this.cleanupInterval);
     // Clear queue — via dequeue, so anyone blocked in spawnAndWait is woken
     // rather than left awaiting a gate nothing will ever resolve.
@@ -1562,17 +1225,6 @@ export class AgentManager {
     const sessions = [...this.agents.values()].map(record => record.session);
     this.agents.clear();
     this.startups.clear();
-    if (pi) {
-      // Prune any orphaned git worktrees (crash recovery). Detached: dispose runs
-      // on the shutdown path, which cannot wait for git. Started before the awaited
-      // shutdown below rather than after it, so the git calls have that window to
-      // finish in instead of racing the process exit that follows.
-      const prune = (repo: string) => { pruneWorktrees(pi, repo).catch(() => {}); };
-      prune(process.cwd());
-      // Also prune repos that caller-supplied cwds created worktrees in — a clean
-      // exit with in-flight agents would otherwise leave stale registrations there.
-      for (const repo of this.worktreeRepos) prune(repo);
-    }
     // Awaited, unlike the eviction path: pi awaits this extension's `session_shutdown`
     // handler and the process exits right after it returns, so anything left unawaited
     // here never runs at all. Bounded — each call carries its own ceiling, concurrently.

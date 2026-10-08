@@ -262,25 +262,6 @@ export function isValidType(type: string): boolean {
   return isValidTypeIn(agents, type);
 }
 
-/** Tool names required for memory management. */
-const MEMORY_TOOL_NAMES = ["read", "write", "edit"];
-
-/**
- * Get memory tool names (read/write/edit) not already in the provided set.
- */
-export function getMemoryToolNames(existingToolNames: Set<string>): string[] {
-  return MEMORY_TOOL_NAMES.filter(n => !existingToolNames.has(n));
-}
-
-/** Tool names needed for read-only memory access. */
-const READONLY_MEMORY_TOOL_NAMES = ["read"];
-
-/**
- * Get read-only memory tool names not already in the provided set.
- */
-export function getReadOnlyMemoryToolNames(existingToolNames: Set<string>): string[] {
-  return READONLY_MEMORY_TOOL_NAMES.filter(n => !existingToolNames.has(n));
-}
 
 /** Get built-in tool names for a type (case-insensitive). */
 export function getToolNamesForType(type: string): string[] {
@@ -300,7 +281,6 @@ export function getConfig(type: string): {
   builtinToolNames: string[];
   extensions: true | string[] | false;
   excludeExtensions?: string[];
-  skills: true | string[] | false;
   promptMode: "replace" | "append";
 } {
   const key = resolveKey(type);
@@ -313,7 +293,6 @@ export function getConfig(type: string): {
       builtinToolNames: config.builtinToolNames ?? BUILTIN_TOOL_NAMES,
       extensions: config.extensions,
       excludeExtensions: config.excludeExtensions,
-      skills: config.skills,
       promptMode: config.promptMode,
     };
   }
@@ -328,7 +307,6 @@ export function getConfig(type: string): {
       builtinToolNames: gp.builtinToolNames ?? BUILTIN_TOOL_NAMES,
       extensions: gp.extensions,
       excludeExtensions: gp.excludeExtensions,
-      skills: gp.skills,
       promptMode: gp.promptMode,
     };
   }
@@ -339,7 +317,6 @@ export function getConfig(type: string): {
     description: "General-purpose agent for complex, multi-step tasks",
     builtinToolNames: BUILTIN_TOOL_NAMES,
     extensions: true,
-    skills: true,
     promptMode: "append",
   };
 }

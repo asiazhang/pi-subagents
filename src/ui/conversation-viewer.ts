@@ -10,9 +10,9 @@ import { type Component, Input, Markdown, type MarkdownOptions, type MarkdownThe
 import { renderAgentName } from "../agent-color.js";
 import { extractText } from "../context.js";
 import type { AgentRecord, ViewerMarkdownMode } from "../types.js";
-import { getLifetimeCost, getLifetimeTotal, getSessionContextPercent } from "../usage.js";
+import { getLifetimeTotal, getSessionContextPercent } from "../usage.js";
 import type { Theme } from "./agent-widget.js";
-import { type AgentActivity, buildInvocationTags, describeActivity, fgPreservingNestedStyles, formatCost, formatDuration, formatSessionTokens, getPromptModeLabel } from "./agent-widget.js";
+import { type AgentActivity, buildInvocationTags, describeActivity, fgPreservingNestedStyles, formatDuration, formatSessionTokens, getPromptModeLabel } from "./agent-widget.js";
 import { createViewerKeys, type ViewerKeybindings, type ViewerKeys } from "./viewer-keys.js";
 
 /** Base lines consumed by chrome: top border + header + header sep + footer sep + footer + bottom border. */
@@ -174,20 +174,16 @@ export class ConversationViewer implements Component {
     /** Send a steering message to the agent. Omitted → no compose affordance. */
     private onSteer?: (message: string) => void,
     /**
-     * Whether the header shows an estimated cost after the token count. Read
-     * once, at construction: the overlay is opened from a menu, so the setting
-     * cannot change while it is on screen.
-     */
-    private showCost = false,
     /**
-     * The current `viewerMarkdown` setting. Read live rather than captured,
-     * unlike `showCost`: `m` changes it while the overlay is on screen.
+     * The current markdown mode. Read live rather than captured, so `m`
+     * changes it while the overlay is on screen.
      * Omitted → `assistant`.
      */
     private viewerMarkdown?: () => ViewerMarkdownMode,
     /**
-     * Persist a mode chosen with `m`, so the key and `/agents → Settings` mean
-     * the same thing. Omitted → `m` still cycles, viewer-locally.
+    /**
+     * Persist a mode chosen with `m` beyond this overlay. Omitted → `m` still
+     * cycles, viewer-locally.
      */
     private onMarkdownMode?: (mode: ViewerMarkdownMode) => void,
   ) {
@@ -317,8 +313,6 @@ export class ConversationViewer implements Component {
       const percent = getSessionContextPercent(this.activity?.session);
       headerParts.push(formatSessionTokens(tokens, percent, th, this.record.compactionCount));
     }
-    const cost = this.showCost ? formatCost(getLifetimeCost(this.record.lifetimeUsage)) : "";
-    if (cost) headerParts.push(cost);
 
     lines.push(row(
       `${statusIcon} ${renderAgentName(this.record.type, th, { bold: true })}${modeTag}  ${th.fg("muted", this.record.description)} ${th.fg("dim", "·")} ${fgPreservingNestedStyles(th, "dim", headerParts.join(" · "))}`,

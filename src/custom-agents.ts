@@ -6,7 +6,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { BUILTIN_TOOL_NAMES } from "./agent-types.js";
-import type { AgentConfig, IsolationMode, MemoryScope, ThinkingLevel } from "./types.js";
+import type { AgentConfig, ThinkingLevel } from "./types.js";
 
 /**
  * The one thing a declared `name:` may not contain, matching Claude Code
@@ -117,7 +117,6 @@ function loadFromDir(dir: string, agents: Map<string, AgentConfig>, source: "pro
       disallowedTools: csvListOptional(fm.disallowed_tools),
       extensions: inheritField(fm.extensions ?? fm.inherit_extensions),
       excludeExtensions: csvListOptional(fm.exclude_extensions),
-      skills: inheritField(fm.skills ?? fm.inherit_skills),
       model: str(fm.model),
       thinking: str(fm.thinking) as ThinkingLevel | undefined,
       maxTurns: nonNegativeInt(fm.max_turns),
@@ -130,8 +129,6 @@ function loadFromDir(dir: string, agents: Map<string, AgentConfig>, source: "pro
       inheritContext: fm.inherit_context != null ? fm.inherit_context === true : undefined,
       runInBackground: fm.run_in_background != null ? fm.run_in_background === true : undefined,
       isolated: fm.isolated != null ? fm.isolated === true : undefined,
-      memory: parseMemory(fm.memory),
-      isolation: parseIsolation(fm.isolation),
       enabled: fm.enabled !== false,  // default true; explicitly false disables
       source,
       sourcePath: path,
@@ -285,35 +282,10 @@ function csvListOptional(val: unknown): string[] | undefined {
   return parseCsvField(val);
 }
 
-/**
- * Parse a memory scope field.
- * omitted → undefined; "user"/"project"/"local" → MemoryScope.
- */
-function parseMemory(val: unknown): MemoryScope | undefined {
-  if (val === "user" || val === "project" || val === "local") return val;
-  return undefined;
-}
+
 
 /**
- * Parse the `isolation` frontmatter field.
- *
- * `off` is kept as a value rather than folded into `undefined` because the two
- * do not mean the same thing here: agent config outranks tool-call params, so
- * `off` vetoes a caller's `worktree` while an absent field lets it through.
- *
- * pi's frontmatter parser is not YAML 1.1 — bare `off` and `no` arrive as
- * strings and only `false` becomes a boolean — so all three spellings are
- * accepted rather than leaving an author's intent silently dropped. Anything
- * else stays `undefined`, as before.
- */
-function parseIsolation(val: unknown): IsolationMode | undefined {
-  if (val === "worktree") return "worktree";
-  if (val === "off" || val === "none" || val === "no" || val === false) return "off";
-  return undefined;
-}
-
-/**
- * Parse an inherit field (extensions, skills).
+ * Parse an inherit field (extensions).
  * omitted/true → true (inherit all); false/"none"/empty → false; csv → listed names.
  */
 function inheritField(val: unknown): true | string[] | false {

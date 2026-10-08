@@ -122,15 +122,6 @@ describe("AgentWidget", () => {
     expect(renderLines(manager, "nested", () => "background")).toBe("");
   });
 
-  it("hides a workflow's agents in every coordinator widget mode", () => {
-    // They belong to the run, which reports for them through its own card and
-    // its own row in the fleet list.
-    const manager = {
-      listAgents: () => [makeRecord("child", { isBackground: true, workflowId: "wf_abc" })],
-    };
-    expect(renderLines(manager, "child", () => "all")).toBe("");
-    expect(renderLines(manager, "child", () => "background")).toBe("");
-  });
 
   it("excludes foreground agents in 'background' mode", () => {
     const manager = { listAgents: () => [makeRecord("foreground", { isBackground: false })] };
@@ -154,39 +145,9 @@ describe("AgentWidget", () => {
     expect(renderLines(manager, "unflagged", () => "background")).toContain("unflagged description");
   });
 
-  // The model is opt-in: the row is already dense, and the same pair is on the
-  // tool result and in the conversation viewer either way.
-  it("names the model and thinking on a running row under showModel", () => {
-    const manager = { listAgents: () => [makeRecord("bg", { isBackground: true })] };
 
-    expect(renderLines(manager, "bg", () => "background", true))
-      .toContain("sonnet 4.6 · thinking: high");
-  });
 
-  it("renders the row exactly as before when showModel is off", () => {
-    const manager = { listAgents: () => [makeRecord("bg", { isBackground: true })] };
 
-    const off = renderLines(manager, "bg", () => "background");
-    expect(off).toContain("bg description");
-    expect(off).not.toContain("sonnet 4.6");
-    expect(off).not.toContain("thinking:");
-  });
-
-  it("carries the short label, never the canonical id, onto the row", () => {
-    const manager = { listAgents: () => [makeRecord("bg", { isBackground: true })] };
-
-    expect(renderLines(manager, "bg", () => "background", true))
-      .not.toContain("anthropic/claude-sonnet-4-6");
-  });
-
-  it("discloses a level the run did not honor", () => {
-    const record = makeRecord("bg", { isBackground: true });
-    record.invocation = { modelName: "haiku 4.5", thinking: "high", requestedThinking: "max" };
-    const manager = { listAgents: () => [record] };
-
-    expect(renderLines(manager, "bg", () => "background", true))
-      .toContain("haiku 4.5 · thinking: high (asked max)");
-  });
 
   // Queued agents stay a one-line count. A fan-out of ten would otherwise eat
   // the whole widget and push every finished agent out of it.
@@ -266,121 +227,6 @@ describe("formatCost", () => {
   it("marks the figure as an estimate", () => {
     // The tilde is the whole disclaimer — it sits beside exact token counts.
     expect(formatCost(0.5).startsWith("~")).toBe(true);
-  });
-});
-
-describe("AgentWidget cost display", () => {
-  const theme = { fg: (_c: string, s: string) => s, bold: (s: string) => s };
-
-  function render(showCost: boolean, cost: number): string {
-    const agent = {
-      id: "a1",
-      type: "general-purpose",
-      description: "spending agent",
-      status: "running",
-      toolUses: 1,
-      startedAt: Date.now(),
-      lifetimeUsage: { input: 1000, output: 200, cacheWrite: 0, cost },
-      compactionCount: 0,
-    };
-    // Carries figures of its own, in the shape the tracker used to have: spend
-    // is read from the record now, so these must not reach the line. Only the
-    // record accumulates a nested child's spend, and only it outlives the run.
-    const activity = new Map([["a1", {
-      activeTools: new Map(),
-      toolUses: 1,
-      responseText: "",
-      turnCount: 1,
-      lifetimeUsage: { input: 9, output: 9, cacheWrite: 0, cost: 0.9 },
-    } as unknown as AgentActivity]]);
-    const widget = new AgentWidget(
-      { listAgents: () => [agent] } as any,
-      activity,
-      () => "all",
-      () => showCost,
-    );
-    let factory: any;
-    widget.setUICtx({ setStatus: () => {}, setWidget: (_k, c) => { factory = c; } } as any);
-    widget.update();
-    return factory({ terminal: { columns: 200 }, requestRender: () => {} }, theme).render().join("\n");
-  }
-
-  it("shows the cost beside the token count when enabled", () => {
-    const line = render(true, 0.0042);
-    expect(line).toContain("1.2k token");
-    expect(line).toContain("~$0.0042");
-  });
-
-  it("shows no cost when disabled", () => {
-    const line = render(false, 0.0042);
-    expect(line).toContain("1.2k token");
-    expect(line).not.toContain("$");
-  });
-
-  it("shows no cost for an unpriced model, even when enabled", () => {
-    const line = render(true, 0);
-    expect(line).toContain("1.2k token");
-    expect(line).not.toContain("$");
-  });
-
-  it("keeps the cost visible after the agent finishes", () => {
-    // The activity entry is deleted the moment an agent finishes, so a finished
-    // line reading from it would drop the number precisely when the question
-    // "what did that cost" gets asked.
-    const finished = {
-      id: "a1", type: "general-purpose", description: "done agent", status: "completed",
-      toolUses: 2, startedAt: Date.now() - 1000, completedAt: Date.now(),
-      lifetimeUsage: { input: 1000, output: 200, cacheWrite: 0, cost: 0.0042 },
-      compactionCount: 0,
-    };
-    const widget = new AgentWidget(
-      { listAgents: () => [finished] } as any, new Map(), () => "all", () => true,
-    );
-    let factory: any;
-    widget.setUICtx({ setStatus: () => {}, setWidget: (_k, c) => { factory = c; } } as any);
-    widget.update();
-    const out = factory({ terminal: { columns: 200 }, requestRender: () => {} }, theme).render().join("\n");
-
-    expect(out).toContain("done agent");
-    expect(out).toContain("~$0.0042");
-  });
-
-  it("shows stats for an agent nobody is tracking live", () => {
-    // A scheduled agent has no activity entry — it spawns through the manager
-    // directly — and used to render with no tokens and no cost at all.
-    const running = {
-      id: "sched", type: "general-purpose", description: "scheduled agent", status: "running",
-      toolUses: 1, startedAt: Date.now(),
-      lifetimeUsage: { input: 1000, output: 200, cacheWrite: 0, cost: 0.0042 },
-      compactionCount: 0,
-    };
-    const widget = new AgentWidget(
-      { listAgents: () => [running] } as any, new Map(), () => "all", () => true,
-    );
-    let factory: any;
-    widget.setUICtx({ setStatus: () => {}, setWidget: (_k, c) => { factory = c; } } as any);
-    widget.update();
-    const out = factory({ terminal: { columns: 200 }, requestRender: () => {} }, theme).render().join("\n");
-
-    expect(out).toContain("1.2k token");
-    expect(out).toContain("~$0.0042");
-  });
-
-  it("defaults to hiding it", () => {
-    const agent = {
-      id: "a1", type: "general-purpose", description: "d", status: "running",
-      toolUses: 0, startedAt: Date.now(),
-      lifetimeUsage: { input: 1000, output: 200, cacheWrite: 0, cost: 0.5 }, compactionCount: 0,
-    };
-    const activity = new Map([["a1", {
-      activeTools: new Map(), toolUses: 0, responseText: "", turnCount: 1,
-    } as AgentActivity]]);
-    const widget = new AgentWidget({ listAgents: () => [agent] } as any, activity, () => "all");
-    let factory: any;
-    widget.setUICtx({ setStatus: () => {}, setWidget: (_k, c) => { factory = c; } } as any);
-    widget.update();
-    expect(factory({ terminal: { columns: 200 }, requestRender: () => {} }, theme).render().join("\n"))
-      .not.toContain("$");
   });
 });
 

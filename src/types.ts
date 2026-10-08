@@ -14,22 +14,6 @@ export type SubagentType = string;
 /** Names of the embedded default agents. */
 export const DEFAULT_AGENT_NAMES = ["general-purpose", "Explore"] as const;
 
-/** Memory scope for persistent agent memory. */
-export type MemoryScope = "user" | "project" | "local";
-
-/**
- * Isolation mode for agent execution.
- *
- * `"off"` exists for the caller's benefit, not the runtime's: models that fill
- * every optional parameter had no legal way to decline a single-value
- * `isolation` field and kept spawning worktrees they had just reasoned their
- * way out of (#231, #184). It is an input spelling only —
- * `resolveAgentInvocationConfig` collapses it to `undefined`, so nothing
- * downstream sees a value other than `"worktree"`. In an agent file it is a
- * genuine veto, since agent config outranks tool-call params.
- */
-export type IsolationMode = "worktree" | "off";
-
 /** Unified agent configuration — used for both default and user-defined agents. */
 export interface AgentConfig {
   name: string;
@@ -49,8 +33,6 @@ export interface AgentConfig {
   /** Extension-name denylist applied after the `extensions:` include set. Exclude wins.
    * Plain canonical names only (case-insensitive); no paths, no wildcard. */
   excludeExtensions?: string[];
-  /** true = inherit all, string[] = only listed, false = none */
-  skills: true | string[] | false;
   model?: string;
   thinking?: ThinkingLevel;
   maxTurns?: number;
@@ -73,13 +55,6 @@ export interface AgentConfig {
   runInBackground?: boolean;
   /** Default for spawn: no extension tools. undefined = caller decides. */
   isolated?: boolean;
-  /** Persistent memory scope — agents with memory get a persistent directory and MEMORY.md */
-  memory?: MemoryScope;
-  /**
-   * Isolation mode — "worktree" runs the agent in a temporary git worktree,
-   * "off" refuses one even when the caller asks (frontmatter outranks params).
-   */
-  isolation?: IsolationMode;
   /** true = this is an embedded default agent (informational) */
   isDefault?: boolean;
   /** false = agent is hidden from the registry */
@@ -116,60 +91,9 @@ export type WidgetMode = 'all' | 'background' | 'off';
  */
 export type ViewerMarkdownMode = 'off' | 'assistant' | 'all';
 
-/**
- * How `@handle message` starts an agent that is not already running.
- * - `model`: inject Claude Code's `agent_mention` reminder and let the main
- *   model spawn it with the `Agent` tool, which is what Claude Code does.
- * - `direct`: spawn it here, immediately, with the typed message as its prompt
- *   and no main-model turn spent.
- * - `off`: `@` means only "attach a file" again.
- *
- * Messaging a running agent and resuming a finished one are direct in every
- * mode — Claude Code only differs from us on the *new* invocation.
- */
-export type AgentMentionMode = 'model' | 'direct' | 'off';
-
-/**
- * What survives a record's eviction so `@handle` keeps working. The live record
- * is discarded after ~10 minutes, but the pi session it wrote is still on disk,
- * and this is the little that is needed to find and describe it again.
- */
-export interface AgentTombstone {
-  handle: string;
-  alias?: string;
-  id: string;
-  type: SubagentType;
-  description: string;
-  /** Always set — a record with no session file is never tombstoned. */
-  sessionFile: string;
-  completedAt: number;
-}
-
-/**
- * What `@handle` resolved to: an agent still in memory, or the remains of one
- * whose conversation can be reopened from disk.
- */
-export type MentionResolution =
-  | { kind: "live"; record: AgentRecord }
-  | { kind: "tombstone"; entry: AgentTombstone };
-
 export interface AgentRecord {
   id: string;
   type: SubagentType;
-  /**
-   * Typeable name for the `@handle message` prompt mention, derived from the
-   * agent type and numbered when siblings collide (`explore`, `explore-2`).
-   * Top-level agents only — nested children are hidden from every top-level
-   * surface, so nothing can address them.
-   */
-  handle?: string;
-  /**
-   * A second, memorable handle from the spawner's `name` (`@auth-audit`), drawn
-   * from the same namespace as `handle` so the two can never collide. Purely
-   * additive: `handle` is assigned regardless, so a named agent stays reachable
-   * by its type and `@explore` never comes to mean "start another one".
-   */
-  alias?: string;
   description: string;
   status: "queued" | "running" | "completed" | "steered" | "aborted" | "stopped" | "error";
   result?: string;
@@ -202,10 +126,6 @@ export interface AgentRecord {
   resultConsumed?: boolean;
   /** Steering messages queued before the session was ready. */
   pendingSteers?: string[];
-  /** Worktree info if the agent is running in an isolated worktree. */
-  worktree?: { path: string; branch: string; baseSha: string; workPath: string };
-  /** Worktree cleanup result after agent completion. */
-  worktreeResult?: { hasChanges: boolean; branch?: string };
   /** The tool_use_id from the original Agent tool call. */
   toolCallId?: string;
   /** Path to the streaming output transcript file. */
@@ -255,14 +175,6 @@ export interface AgentRecord {
   structuredRetried?: boolean;
   /** Parent agent ID for ownership-scoped nested controls. */
   parentAgentId?: string;
-  /**
-   * The workflow run that owns this child, when a workflow spawned it.
-   *
-   * Owned the same way a nested child is owned by its parent: filtered out of
-   * every top-level surface, and outside the `maxConcurrent` pool. See
-   * `isTopLevelAgent`.
-   */
-  workflowId?: string;
   /** Effective inherited nesting cap for this branch. */
   maxSubagentDepth?: number;
   /**
@@ -301,7 +213,6 @@ export interface AgentInvocation {
   isolated?: boolean;
   inheritContext?: boolean;
   runInBackground?: boolean;
-  isolation?: IsolationMode;
 }
 
 /** Details attached to custom notification messages for visual rendering. */
@@ -313,12 +224,6 @@ export interface NotificationDetails {
   turnCount: number;
   maxTurns?: number;
   totalTokens: number;
-  /**
-   * Estimated cost in USD, from pi's per-message `usage.cost.total`. Always
-   * populated (0 when the model has no pricing); the renderer decides whether
-   * to show it, per the `showCost` setting.
-   */
-  totalCost?: number;
   durationMs: number;
   outputFile?: string;
   error?: string;
@@ -333,45 +238,3 @@ export interface EnvInfo {
   platform: string;
 }
 
-/**
- * A subagent spawn registered to fire on a schedule.
- *
- * Stored at `<cwd>/.pi/subagent-schedules/<sessionId>.json`. Session-scoped:
- * survives `/resume` but resets on `/new`, mirroring pi-chonky-tasks.
- */
-export interface ScheduledSubagent {
-  id: string;
-  /** Unique within store. Defaults to `description`. */
-  name: string;
-  description: string;
-  /** Raw user input — cron expr | "+10m" | ISO | "5m". */
-  schedule: string;
-  scheduleType: "cron" | "once" | "interval";
-  /** Computed at create time for interval/once. */
-  intervalMs?: number;
-
-  // spawn params (subset of Agent tool params; no inherit_context, no resume)
-  subagent_type: SubagentType;
-  prompt: string;
-  model?: string;
-  thinking?: ThinkingLevel;
-  max_turns?: number;
-  isolated?: boolean;
-  isolation?: IsolationMode;
-
-  // state
-  enabled: boolean;
-  /** ISO timestamp. */
-  createdAt: string;
-  lastRun?: string;
-  lastStatus?: "success" | "error" | "running";
-  /** Refreshed on every fire and on store load. */
-  nextRun?: string;
-  runCount: number;
-}
-
-export interface ScheduleStoreData {
-  /** For future migrations. */
-  version: 1;
-  jobs: ScheduledSubagent[];
-}

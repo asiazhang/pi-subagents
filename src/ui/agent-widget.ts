@@ -10,7 +10,7 @@ import { renderAgentName } from "../agent-color.js";
 import { type AgentManager, isTopLevelAgent } from "../agent-manager.js";
 import { getConfig } from "../agent-types.js";
 import type { AgentInvocation, SubagentType, WidgetMode } from "../types.js";
-import { getLifetimeCost, getLifetimeTotal, getSessionContextPercent, type LifetimeUsage, type SessionLike } from "../usage.js";
+import { getLifetimeTotal, getSessionContextPercent, type LifetimeUsage, type SessionLike } from "../usage.js";
 
 // ---- Constants ----
 
@@ -83,8 +83,6 @@ export interface AgentDetails {
   turnCount?: number;
   /** Effective max turns (undefined = unlimited). */
   maxTurns?: number;
-  /** Estimated cost in USD; 0 when the model has no pricing data. */
-  cost?: number;
   agentId?: string;
   error?: string;
 }
@@ -203,7 +201,6 @@ export function buildInvocationTags(
   const thinking = asked(invocation.thinking, invocation.requestedThinking);
   if (thinking) tags.push(`thinking: ${thinking}`);
   if (invocation.isolated) tags.push("isolated");
-  if (invocation.isolation === "worktree") tags.push("worktree");
   if (invocation.inheritContext) tags.push("inherit context");
   if (invocation.runInBackground) tags.push("background");
   if (invocation.maxTurns != null) tags.push(`max turns: ${invocation.maxTurns}`);
@@ -276,20 +273,6 @@ export class AgentWidget {
      * extension supplies one defaulting to `"background"`.
      */
     private mode: () => WidgetMode = () => "all",
-    /**
-     * Read live at render time, like `mode`. Whether running agents show an
-     * estimated cost beside their token count. Defaults to off — the extension
-     * supplies the user's `showCost` setting.
-     */
-    private showCost: () => boolean = () => false,
-    /**
-     * Read live at render time, like `mode`. Whether running agents name the
-     * model driving them and the thinking level it is running at. Defaults to
-     * off — the extension supplies the user's `showModel` setting — because the
-     * row is already dense and the same pair is on the tool result and in the
-     * conversation viewer unconditionally.
-     */
-    private showModel: () => boolean = () => false,
   ) {}
 
   /**
@@ -399,11 +382,6 @@ export class AgentWidget {
     const activity = this.agentActivity.get(a.id);
     if (activity) parts.push(formatTurns(activity.turnCount, activity.maxTurns));
     if (a.toolUses > 0) parts.push(`${a.toolUses} tool use${a.toolUses === 1 ? "" : "s"}`);
-    // From the record, not the activity tracker: that entry is deleted the
-    // moment an agent finishes, and "what did it cost" is a question asked
-    // about finished agents.
-    const costText = this.showCost() ? formatCost(getLifetimeCost(a.lifetimeUsage)) : "";
-    if (costText) parts.push(costText);
     parts.push(duration);
 
     const modeTag = modeLabel ? ` ${theme.fg("dim", `(${modeLabel})`)}` : "";
@@ -458,22 +436,11 @@ export class AgentWidget {
       const tokens = getLifetimeTotal(a.lifetimeUsage);
       const contextPercent = getSessionContextPercent(bg?.session);
       const tokenText = tokens > 0 ? formatSessionTokens(tokens, contextPercent, theme, a.compactionCount) : "";
-      const costText = this.showCost() ? formatCost(getLifetimeCost(a.lifetimeUsage)) : "";
 
       const parts: string[] = [];
-      if (this.showModel()) {
-        // Leading, and paired: a thinking level means nothing without the model
-        // it applies to. The tag is taken from buildInvocationTags rather than
-        // rebuilt so the "(asked X)" annotation survives.
-        const { modelName, tags } = buildInvocationTags(a.invocation);
-        if (modelName) parts.push(modelName);
-        const thinkingTag = tags.find(tag => tag.startsWith("thinking: "));
-        if (thinkingTag) parts.push(thinkingTag);
-      }
       if (bg) parts.push(formatTurns(bg.turnCount, bg.maxTurns));
       if (toolUses > 0) parts.push(`${toolUses} tool use${toolUses === 1 ? "" : "s"}`);
       if (tokenText) parts.push(tokenText);
-      if (costText) parts.push(costText);
       parts.push(elapsed);
       const statsText = parts.join(" · ");
 

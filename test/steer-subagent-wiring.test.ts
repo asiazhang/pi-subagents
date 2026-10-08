@@ -85,7 +85,6 @@ describe("steer_subagent before the session exists", () => {
 
     const result = await steer(tools, id, "change course");
     expect(textOf(result)).toContain("queued");
-    expect(pi.events.emit).toHaveBeenCalledWith("subagents:steered", { id, message: "change course" });
 
     await lifecycle.get("session_shutdown")?.();
   });
@@ -169,7 +168,6 @@ describe("steer_subagent once the session exists", () => {
 
     expect(steerAgent).toHaveBeenCalledWith(expect.anything(), "refocus");
     expect(textOf(result)).toContain("Steering message sent");
-    expect(pi.events.emit).toHaveBeenCalledWith("subagents:steered", { id, message: "refocus" });
 
     await lifecycle.get("session_shutdown")?.();
   });

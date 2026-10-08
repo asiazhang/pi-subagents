@@ -20,15 +20,8 @@ vi.mock("../src/agent-runner.js", () => ({
   resumeAgent: vi.fn(),
 }));
 
-vi.mock("../src/worktree.js", () => ({
-  createWorktree: vi.fn(),
-  cleanupWorktree: vi.fn(() => ({ hasChanges: false })),
-  pruneWorktrees: vi.fn(),
-  isWorktreeIsolationEnabled: vi.fn(() => true),
-}));
 
 import { runAgent } from "../src/agent-runner.js";
-import { createWorktree } from "../src/worktree.js";
 
 const mockPi = {} as any;
 const mockCtx = { cwd: "/tmp" } as any;
@@ -82,7 +75,6 @@ describe("maxConcurrentForeground", () => {
 
   afterEach(() => {
     manager?.dispose();
-    vi.mocked(createWorktree).mockReset();
   });
 
   // The governing constraint: a user who never sets this must see exactly the
@@ -149,33 +141,6 @@ describe("maxConcurrentForeground", () => {
     expect(runAgent).toHaveBeenCalledTimes(2);
   });
 
-  // A workflow's children go out through `spawnAndWait`, so they are `blocking`
-  // too — but the run already caps how many of its agents are in flight, and it
-  // is that cap, not the session's, that a fan-out is meant to obey. Charge them
-  // here as well and `maxConcurrentForeground: 1` serializes every workflow on
-  // the machine, one agent at a time, however wide the script asked to fan out.
-  // Same exemption, and the same `isTopLevelAgent` test, as the background pool.
-  it("never queues a workflow's children, which the run already bounds", async () => {
-    controllableRuns();
-    manager = new AgentManager();
-    manager.setMaxConcurrentForeground(1);
-
-    void fg(manager, "wf-a", { workflowId: "wf1" });
-    void fg(manager, "wf-b", { workflowId: "wf1" });
-    void fg(manager, "wf-c", { workflowId: "wf1" });
-
-    expect(recordFor(manager, "wf-a").status).toBe("running");
-    expect(recordFor(manager, "wf-b").status).toBe("running");
-    expect(recordFor(manager, "wf-c").status).toBe("running");
-    expect(runAgent).toHaveBeenCalledTimes(3);
-
-    // The session's own blocking work is still bounded — the exemption is for
-    // the workflow's children, not a hole in the limit.
-    void fg(manager, "mine-1");
-    void fg(manager, "mine-2");
-    expect(recordFor(manager, "mine-1").status).toBe("running");
-    expect(recordFor(manager, "mine-2").status).toBe("queued");
-  });
 
   // The requirement from #253: the two pools must not be able to starve each
   // other. The whole reason foreground was exempt from maxConcurrent is that a
@@ -371,35 +336,6 @@ describe("maxConcurrentForeground", () => {
     });
   });
 
-  // #179: a strict worktree-isolation failure throws out of spawnAndWait on the
-  // immediate path. Queue pressure must not silently turn that into a result.
-  it("rethrows a drain-time startup failure, and keeps draining", async () => {
-    const resolvers = controllableRuns();
-    manager = new AgentManager();
-    manager.setMaxConcurrentForeground(1);
-
-    vi.mocked(createWorktree).mockReturnValue(undefined as any);
-
-    const first = fg(manager, "holder");
-    const doomed = fg(manager, "doomed", { isolation: "worktree" });
-    const after = fg(manager, "after");
-    expect(recordFor(manager, "doomed").status).toBe("queued");
-
-    resolvers.get("holder")!();
-    await first;
-
-    await expect(doomed).rejects.toThrow(/worktree/i);
-    expect(recordFor(manager, "doomed").status).toBe("error");
-    // The throw above IS the caller's report. Left unconsumed, the record would
-    // also nudge the session — the same failure delivered twice, and only for
-    // spawns unlucky enough to have queued.
-    expect(recordFor(manager, "doomed").resultConsumed).toBe(true);
-
-    // The failure freed nothing, but it also blocked nothing.
-    expect(recordFor(manager, "after").status).toBe("running");
-    resolvers.get("after")!();
-    await after;
-  });
 
   it("drains immediately when the limit is raised or cleared", async () => {
     controllableRuns();

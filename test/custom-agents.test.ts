@@ -156,7 +156,6 @@ Just a prompt.`);
     expect(agent.description).toBe("minimal"); // defaults to filename
     expect(agent.builtinToolNames).toEqual(BUILTIN_TOOL_NAMES); // all tools
     expect(agent.extensions).toBe(true); // inherit all
-    expect(agent.skills).toBe(true); // inherit all
     expect(agent.model).toBeUndefined();
     expect(agent.thinking).toBeUndefined();
     expect(agent.maxTurns).toBeUndefined();
@@ -251,7 +250,6 @@ No tools.`);
   it("handles extensions: false → no extensions", () => {
     writeAgent("noext", `---
 extensions: false
-skills: false
 ---
 
 No extensions.`);
@@ -259,13 +257,11 @@ No extensions.`);
     const result = loadCustomAgents(tmpDir);
     const agent = result.get("noext")!;
     expect(agent.extensions).toBe(false);
-    expect(agent.skills).toBe(false);
   });
 
   it("handles extension allowlist", () => {
     writeAgent("partial", `---
 extensions: web-search, mcp-server
-skills: planning, review
 ---
 
 Partial access.`);
@@ -273,7 +269,6 @@ Partial access.`);
     const result = loadCustomAgents(tmpDir);
     const agent = result.get("partial")!;
     expect(agent.extensions).toEqual(["web-search", "mcp-server"]);
-    expect(agent.skills).toEqual(["planning", "review"]);
   });
 
   it("parses exclude_extensions CSV", () => {
@@ -534,7 +529,6 @@ tools: read
   it("supports inherit_extensions as alternative to extensions", () => {
     writeAgent("altkey", `---
 inherit_extensions: false
-inherit_skills: false
 ---
 
 Alt keys.`);
@@ -542,13 +536,11 @@ Alt keys.`);
     const result = loadCustomAgents(tmpDir);
     const agent = result.get("altkey")!;
     expect(agent.extensions).toBe(false);
-    expect(agent.skills).toBe(false);
   });
 
   it("extensions: none → false", () => {
     writeAgent("extnone", `---
 extensions: none
-skills: none
 ---
 
 None.`);
@@ -556,13 +548,11 @@ None.`);
     const result = loadCustomAgents(tmpDir);
     const agent = result.get("extnone")!;
     expect(agent.extensions).toBe(false);
-    expect(agent.skills).toBe(false);
   });
 
   it("extensions: true → true (inherit all)", () => {
     writeAgent("exttrue", `---
 extensions: true
-skills: true
 ---
 
 All.`);
@@ -570,7 +560,6 @@ All.`);
     const result = loadCustomAgents(tmpDir);
     const agent = result.get("exttrue")!;
     expect(agent.extensions).toBe(true);
-    expect(agent.skills).toBe(true);
   });
 
   it("handles enabled: false frontmatter", () => {
@@ -767,118 +756,6 @@ All tools.`);
 
     const result = loadCustomAgents(tmpDir);
     expect(result.get("unrestricted")!.disallowedTools).toBeUndefined();
-  });
-
-  it("parses memory scope", () => {
-    writeAgent("rememberer", `---
-description: Agent with memory
-memory: project
----
-
-Remember things.`);
-
-    const result = loadCustomAgents(tmpDir);
-    expect(result.get("rememberer")!.memory).toBe("project");
-  });
-
-  it("parses memory: user scope", () => {
-    writeAgent("global-mem", `---
-memory: user
----
-
-User memory.`);
-
-    const result = loadCustomAgents(tmpDir);
-    expect(result.get("global-mem")!.memory).toBe("user");
-  });
-
-  it("memory defaults to undefined when omitted", () => {
-    writeAgent("no-mem", `---
-description: No memory
----
-
-Stateless.`);
-
-    const result = loadCustomAgents(tmpDir);
-    expect(result.get("no-mem")!.memory).toBeUndefined();
-  });
-
-  it("rejects invalid memory scope", () => {
-    writeAgent("bad-mem", `---
-memory: invalid
----
-
-Bad memory.`);
-
-    const result = loadCustomAgents(tmpDir);
-    expect(result.get("bad-mem")!.memory).toBeUndefined();
-  });
-
-  it("parses isolation: worktree", () => {
-    writeAgent("isolated-wt", `---
-description: Worktree agent
-isolation: worktree
----
-
-Isolated.`);
-
-    const result = loadCustomAgents(tmpDir);
-    expect(result.get("isolated-wt")!.isolation).toBe("worktree");
-  });
-
-  it("isolation defaults to undefined when omitted", () => {
-    writeAgent("no-isolation", `---
-description: Normal
----
-
-Normal.`);
-
-    const result = loadCustomAgents(tmpDir);
-    expect(result.get("no-isolation")!.isolation).toBeUndefined();
-  });
-
-  it("rejects invalid isolation mode", () => {
-    writeAgent("bad-isolation", `---
-isolation: docker
----
-
-Bad isolation.`);
-
-    const result = loadCustomAgents(tmpDir);
-    expect(result.get("bad-isolation")!.isolation).toBeUndefined();
-  });
-
-  // `isolation: off` is a veto, not a synonym for omitting the field: agent
-  // config outranks tool-call params, so it turns a caller's "worktree" back
-  // off. That is why it must survive parsing as "off" rather than undefined.
-  it("parses isolation: off", () => {
-    writeAgent("no-wt", `---
-description: Never worktree
-isolation: off
----
-
-No worktree.`);
-
-    const result = loadCustomAgents(tmpDir);
-    expect(result.get("no-wt")!.isolation).toBe("off");
-  });
-
-  // pi's frontmatter parser is not YAML 1.1, so bare `off`/`no` stay strings
-  // and only `false` becomes a boolean — accept the spellings an author is
-  // likely to reach for rather than silently dropping them.
-  it.each([
-    ["false", "isolation: false"],
-    ["none", "isolation: none"],
-    ["no", "isolation: no"],
-  ])("accepts %s as a spelling of off", (name, line) => {
-    writeAgent(`off-${name}`, `---
-${line}
----
-
-Off.`);
-
-    const result = loadCustomAgents(tmpDir);
-    expect(result.get(`off-${name}`)!.isolation).toBe("off");
   });
 
   // A YAML error in one file used to escape loadFromDir and abort the whole
@@ -1086,37 +963,6 @@ Good body.`);
       expect(roundTrip({ builtinToolNames: [] }).builtinToolNames).toEqual([]);
     });
 
-    it("preserves the scalar and list fields it writes", () => {
-      const loaded = roundTrip({
-        displayName: "RT",
-        model: "anthropic/claude-haiku-4-5",
-        thinking: "low",
-        maxTurns: 7,
-        allowedSubagents: ["Explore"],
-        excludeExtensions: ["ext-beta"],
-        disallowedTools: ["write"],
-        inheritContext: true,
-        runInBackground: true,
-        outputTranscript: false,
-        isolated: true,
-        memory: "project",
-        isolation: "worktree",
-      });
-      expect(loaded.displayName).toBe("RT");
-      expect(loaded.model).toBe("anthropic/claude-haiku-4-5");
-      expect(loaded.thinking).toBe("low");
-      expect(loaded.maxTurns).toBe(7);
-      expect(loaded.allowedSubagents).toEqual(["Explore"]);
-      expect(loaded.excludeExtensions).toEqual(["ext-beta"]);
-      expect(loaded.disallowedTools).toEqual(["write"]);
-      expect(loaded.inheritContext).toBe(true);
-      expect(loaded.runInBackground).toBe(true);
-      expect(loaded.outputTranscript).toBe(false);
-      expect(loaded.isolated).toBe(true);
-      expect(loaded.memory).toBe("project");
-      expect(loaded.isolation).toBe("worktree");
-    });
-
     // The writer used to emit `run_in_background` only when truthy, so an
     // explicit `false` was dropped. Harmless while foreground was the default
     // and omission meant the same thing — but with `backgroundByDefault` on,
@@ -1129,27 +975,6 @@ Good body.`);
       // Absent must stay absent — writing a value would freeze the agent
       // against the setting rather than letting it follow the default.
       expect(roundTrip({}).runInBackground).toBeUndefined();
-    });
-
-    it("preserves the extension and skill list fields", () => {
-      // These serialize as bare CSV and are re-parsed by parseExtensionsSpec /
-      // the skills field. A generate/parse mismatch here is silent: the ejected
-      // agent loads fine but with a different extension or skill scope than the
-      // one that was ejected.
-      const loaded = roundTrip({
-        extensions: ["mcp", "pi-notify"],
-        skills: ["planning", "review"],
-        disallowedTools: ["write", "edit"],
-      });
-      expect(loaded.extensions).toEqual(["mcp", "pi-notify"]);
-      expect(loaded.skills).toEqual(["planning", "review"]);
-      expect(loaded.disallowedTools).toEqual(["write", "edit"]);
-    });
-
-    it("preserves the boolean forms of extensions and skills", () => {
-      const off = roundTrip({ extensions: false, skills: false });
-      expect(off.extensions).toBe(false);
-      expect(off.skills).toBe(false);
     });
 
     it("preserves allowed_subagents in both its list and `all` forms", () => {

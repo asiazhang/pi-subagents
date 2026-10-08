@@ -16,7 +16,7 @@ import {
   resolveTypeIn,
 } from "./agent-types.js";
 import { loadCustomAgents } from "./custom-agents.js";
-import { isolationParam, resolveAgentInvocationConfig } from "./invocation-config.js";
+import { resolveAgentInvocationConfig } from "./invocation-config.js";
 import { resolveModel } from "./model-resolver.js";
 import { checkModelScope } from "./model-scope.js";
 import {
@@ -30,11 +30,9 @@ import type {
   AgentConfig,
   AgentInvocation,
   AgentRecord,
-  IsolationMode,
   ThinkingLevel,
 } from "./types.js";
 import { addUsage } from "./usage.js";
-import { isWorktreeIsolationEnabled } from "./worktree.js";
 
 /**
  * Hard ceiling on nesting for every branch: main session = 0, its subagents = 1,
@@ -57,7 +55,6 @@ interface NestedSpawnOptions {
   inheritContext?: boolean;
   thinkingLevel?: ThinkingLevel;
   isBackground?: boolean;
-  isolation?: IsolationMode;
   invocation?: AgentInvocation;
   signal?: AbortSignal;
   onAssistantUsage?: (usage: { input: number; output: number; cacheWrite: number }) => void;
@@ -178,7 +175,6 @@ export function createNestedSubagentTools(context: NestedToolContext): ToolDefin
       resume: Type.Optional(Type.String({ description: "Resume a nested agent owned by this parent." })),
       isolated: Type.Optional(Type.Boolean()),
       inherit_context: Type.Optional(Type.Boolean()),
-      ...isolationParam(isWorktreeIsolationEnabled()),
     }),
     execute: async (_toolCallId, params, signal, _onUpdate, ctx) => {
       if (params.resume) {
@@ -225,7 +221,6 @@ export function createNestedSubagentTools(context: NestedToolContext): ToolDefin
       // Foreground regardless of `backgroundByDefault` — see the reasoning on
       // ResolveOptions. An explicit `true` here still opts in.
       const invocation = resolveAgentInvocationConfig(config, params, {
-        worktreeAllowed: isWorktreeIsolationEnabled(),
         defaultRunInBackground: false,
       });
       let model = ctx.model;
@@ -262,14 +257,12 @@ export function createNestedSubagentTools(context: NestedToolContext): ToolDefin
         isolated: invocation.isolated,
         inheritContext: invocation.inheritContext,
         thinkingLevel: invocation.thinking,
-        isolation: invocation.isolation,
         invocation: {
           thinking: invocation.thinking,
           maxTurns: invocation.maxTurns,
           isolated: invocation.isolated,
           inheritContext: invocation.inheritContext,
           runInBackground: invocation.runInBackground,
-          isolation: invocation.isolation,
         },
         // Nested children are hidden from every reporting surface, so their spend
         // would otherwise be unattributable. Fold it into every ancestor's record:

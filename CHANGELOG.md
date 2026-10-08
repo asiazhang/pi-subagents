@@ -9,10 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
-- **The built-in `Plan` agent type is gone.** This fork does not use it; the type no longer registers, so `subagent_type: "Plan"` and the `@plan` handle resolve like any unknown type (fallback agent, or a hard error under `fallbackSubagent: none`). Recreate it per-project with a `.pi/agents/plan.md` if needed — `general-purpose` and `Explore` are unaffected.
+- **The built-in `Plan` agent type is gone.** This fork does not use it; the type no longer registers, so `subagent_type: "Plan"` resolves like any unknown type (fallback agent, or a hard error under `fallbackSubagent: none`). Recreate it per-project with a `.pi/agents/plan.md` if needed — `general-purpose` and `Explore` are unaffected.
+- **此 fork 收窄到最小核心面:删除工作流引擎、调度、跨扩展 RPC、Agent 提及、worktree 隔离、持久化记忆、技能预加载、FleetView、模糊模型解析与全部显示项开关。** 个人维护的 fork,按实际使用盘点取舍(src/ 约 20.9k 行 → 约 9.2k 行)。保留核心闭环(后台/队列/通知/引导/恢复)、自定义代理、嵌套子代理、scopeModels、汇聚策略与 widget/对话查看器。工具面相应收缩:`Agent` 失去 `name`/`isolation`/`schedule` 参数,`SubagentWorkflow` 工具、`--subagents-workflow-file` 标志、`/agents` 的 Workflows/Scheduled jobs 入口、`subagents:*` 事件与 `subagents:rpc:*` 通道全部移除;`get_subagent_result`/`steer_subagent` 只接受 `agent_id`;模型解析只认精确的 `provider/modelId`(钉死模型必须是注册表现有 id,否则回退继承);设置只剩项目级 `.pi/subagents.json`。保留项与删除项的完整理由见 [docs/adr/0001-personal-fork-scope.md](docs/adr/0001-personal-fork-scope.md)。
 
 ### Fixed
-- **The workflow stand-down now recognises a lowercase `workflow` tool** ([#283](https://github.com/tintinweb/pi-subagents/issues/283) — thanks [@zampierilucas](https://github.com/zampierilucas)). The match is exact on purpose, and the set held `Workflow` and `SubagentWorkflow` only, so `@quintinshaw/pi-dynamic-workflows` — which registers lowercase `workflow` — never tripped it: with `workflowsEnabled` unset, both orchestrators reached the model and nothing warned. Adding the third name is the whole fix; exactness is kept, so a `list_workflows` still cannot take the feature down.
 
 ## [0.19.0] - 2026-08-25
 
