@@ -98,7 +98,7 @@ export interface RunPrintModeOptions {
   prompt: string;
   /**
    * Working directory for the run. Defaults to a fresh temp dir that `dispose()`
-   * removes. Pass a fixtures dir to make project custom agents discoverable.
+   * removes.
    */
   cwd?: string;
   /** Parent host system prompt. Default: a minimal orchestrator prompt. */
@@ -117,10 +117,7 @@ export interface RunPrintModeOptions {
    * background subagents finish (the pi-chonky-step monkey-patch). Default true.
    */
   hold?: boolean;
-  /**
-   * Run before the parent turn, after globals are isolated — e.g.
-   * `registerAgents(loadCustomAgents(cwd))` to install frontmatter agents.
-   */
+  /** Run before the parent turn, after globals are isolated. */
   beforeRun?: () => void | Promise<void>;
   /**
    * Isolate global discovery (PI_CODING_AGENT_DIR + HOME → temp) so the dev's
@@ -258,10 +255,9 @@ export async function runPrintMode(options: RunPrintModeOptions): Promise<PrintM
   const ownsCwd = options.cwd == null;
   const cwd = options.cwd ?? mkdtempSync(join(tmpdir(), "subagents-print-"));
 
-  // chdir into cwd: the extension discovers project custom agents from process.cwd()
-  // (not ctx.cwd), and re-reads them on every Agent invocation — so a custom agent
-  // is only spawnable if process.cwd() points at the dir holding it. Restored on
-  // dispose. (Vitest isolates test files per process, so this doesn't race.)
+  // chdir into cwd: the extension reads project state from process.cwd()
+  // (not ctx.cwd). Restored on dispose. (Vitest isolates test files per
+  // process, so this doesn't race.)
   const prevCwd = process.cwd();
   process.chdir(cwd);
 
@@ -349,8 +345,8 @@ export async function runPrintMode(options: RunPrintModeOptions): Promise<PrintM
   });
   await loader.reload();
 
-  // Run any test-supplied registration (e.g. loadCustomAgents) now that globals
-  // are isolated but before the parent turn spawns anything.
+  // Run any test-supplied registration now that globals are isolated but before
+  // the parent turn spawns anything.
   await options.beforeRun?.();
 
   const { session } = await createAgentSession({

@@ -11,13 +11,11 @@ import { join } from "node:path";
 import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 
 /**
- * Project/global default for writing a subagent's `.output` transcript; a custom
- * agent's `output_transcript` overrides it per agent.
+ * Project default for writing a subagent's `.output` transcript.
  *
- * State lives here rather than in an index.ts closure because both spawn paths
- * need it — the top-level Agent tool and the nested delegation tools. Same
- * reason `scopeModels` lives in model-scope.ts: a setting only one path can read
- * is a setting the other path silently ignores.
+ * State lives here rather than in an index.ts closure because the spawn paths
+ * read it at different times (foreground attach happens in the onSpawned
+ * callback, background attach after spawn returns).
  */
 let outputTranscriptDefault = true;
 

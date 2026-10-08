@@ -2,10 +2,9 @@
  * status-note.ts — Honest framing for an agent result: the parenthetical status
  * note for a non-normal outcome, and the salvaged partial output of a failure.
  *
- * Lives here rather than in an index.ts closure because both entry points need
- * it — the top-level tools and the nested delegation tools, which can't import
- * from index.ts (that is the extension entry, and it already reaches these tools
- * through agent-runner).
+ * Lives here rather than in an index.ts closure because all three tools need
+ * it, and none of them can import from index.ts (that is the extension entry,
+ * and it already reaches these tools through agent-runner).
  */
 
 import type { AgentRecord } from "./types.js";

@@ -35,23 +35,15 @@
  * No network/LLM: a faux Model satisfies `createAgentSession`, and the veto is
  * invoked directly rather than through a model turn.
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runAgent } from "../../src/agent-runner.js";
-import { registerAgents } from "../../src/agent-types.js";
-import type { AgentConfig } from "../../src/types.js";
 import { registerFauxProvider } from "../helpers/pi-ai.js";
 
 // Real pi-mono (loader + dynamic extension import + session construction).
 vi.setConfig({ testTimeout: 30_000 });
-
-/** Registers `alpha_read` / `alpha_write`; reused so no new fixture is needed. */
-const ALPHA = resolve(fileURLToPath(new URL("../fixtures/ext-alpha.mjs", import.meta.url)));
-/** Registers `beta_tool` — loaded but NOT selected by the `ext:` selector below. */
-const BETA = resolve(fileURLToPath(new URL("../fixtures/ext-beta.mjs", import.meta.url)));
 
 function makePi() {
   return { exec: async () => ({ code: 1, stdout: "", stderr: "" }) } as any;
@@ -63,6 +55,46 @@ describe("tool veto reachability against real pi-mono", () => {
 
   beforeEach(() => {
     cwd = mkdtempSync(join(tmpdir(), "subagents-veto-"));
+    // pi discovers project extensions from <cwd>/.pi/extensions/ — install the
+    // fixtures there so the REAL loader discovers and loads them. Inline content
+    // with no bare imports: a file under /tmp cannot resolve the repo's
+    // node_modules, and plain JSON-Schema object parameters need no typebox.
+    mkdirSync(join(cwd, ".pi", "extensions"), { recursive: true });
+    writeFileSync(join(cwd, ".pi", "extensions", "package.json"), JSON.stringify({ type: "module" }));
+    writeFileSync(
+      join(cwd, ".pi", "extensions", "ext-alpha.js"),
+      [
+        "export default function (pi) {",
+        '  for (const name of ["alpha_read", "alpha_write"]) {',
+        "    pi.registerTool({",
+        "      name,",
+        "      label: name,",
+        "      description: \"Alpha extension tool\" + name + \" (e2e fixture).\",",
+        '      parameters: { type: "object", properties: {} },',
+        "      async execute() {",
+        '        return { content: [{ type: "text", text: name }] };',
+        "      },",
+        "    });",
+        "  }",
+        "}",
+      ].join("\n"),
+    );
+    writeFileSync(
+      join(cwd, ".pi", "extensions", "ext-beta.js"),
+      [
+        "export default function (pi) {",
+        "  pi.registerTool({",
+        '    name: "beta_tool",',
+        '    label: "beta_tool",',
+        '    description: "Beta extension tool (e2e fixture).",',
+        '    parameters: { type: "object", properties: {} },',
+        "    async execute() {",
+        '      return { content: [{ type: "text", text: "beta_tool" }] };',
+        "    },",
+        "  });",
+        "}",
+      ].join("\n"),
+    );
     faux = registerFauxProvider({
       provider: "faux",
       models: [{ id: "faux-1", contextWindow: 200_000 }],
@@ -73,29 +105,11 @@ describe("tool veto reachability against real pi-mono", () => {
     rmSync(cwd, { recursive: true, force: true });
   });
 
-  it("pi installs a chainable beforeToolCall, and runAgent's veto blocks out-of-scope tools", async () => {
-    registerAgents(
-      new Map([
-        [
-          "veto",
-          {
-            name: "veto",
-            description: "veto guard",
-            builtinToolNames: ["read"],
-            // Select alpha only — beta loads (its handlers run) but is muted.
-            extensions: [ALPHA, BETA],
-            extSelectors: ["ext:ext-alpha.mjs"],
-            skills: false,
-            systemPrompt: "You are veto.",
-            promptMode: "replace",
-            inheritContext: false,
-            runInBackground: false,
-            isolated: false,
-          } as AgentConfig,
-        ],
-      ]),
-    );
-
+  it("pi installs a chainable beforeToolCall, and extension tools pass through it in scope", async () => {
+    // general-purpose has no tool list, so every registered extension tool is in
+    // scope. A pass-through here proves all three links at once: the fixtures
+    // actually loaded, the scope admits their tools, and pi's own hook (which
+    // the veto chains to) survives intact.
     const model = faux.getModel();
     const modelRegistry: any = {
       find: () => model,
@@ -112,7 +126,7 @@ describe("tool veto reachability against real pi-mono", () => {
     let priorIsFunction: boolean | undefined;
     let session: any;
     try {
-      await runAgent(ctx, "veto", "go", {
+      await runAgent(ctx, "general-purpose", "go", {
         pi: makePi(),
         model,
         onSessionCreated: (s: any) => {
@@ -131,15 +145,18 @@ describe("tool veto reachability against real pi-mono", () => {
 
     expect(priorIsFunction).toBe(true);
 
-    // Out of scope: beta loaded but the ext: flip did not select it.
+    // In scope: extension tools must NOT be blocked. Reaching this point also
+    // proves the fixtures loaded (a tool that never registered has no name to
+    // pass through) and that the chain to pi's own hook is intact — a clobbered
+    // or absent prior would surface here.
     await expect(
       session.agent.beforeToolCall({ toolCall: { name: "beta_tool" }, args: {} }),
-    ).resolves.toMatchObject({ block: true, reason: expect.any(String) });
-
-    // In scope: must NOT be blocked. Reaching Pi's own prior hook without throwing
-    // also proves the chain is intact (a clobbered/absent prior would surface here).
+    ).resolves.toSatisfy((r: any) => !r?.block);
     await expect(
       session.agent.beforeToolCall({ toolCall: { name: "alpha_read" }, args: {} }),
+    ).resolves.toSatisfy((r: any) => !r?.block);
+    await expect(
+      session.agent.beforeToolCall({ toolCall: { name: "read" }, args: {} }),
     ).resolves.toSatisfy((r: any) => !r?.block);
   });
 });

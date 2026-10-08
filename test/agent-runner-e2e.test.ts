@@ -2,15 +2,14 @@
  * agent-runner-e2e.test.ts — End-to-end test against the REAL pi-mono runtime.
  *
  * Every other agent-runner test mocks `@earendil-works/pi-coding-agent`: it
- * asserts that `runAgent` hands the right `tools:` allowlist to a *simulated*
- * `createAgentSession`. That proves our allowlist math, but not the assumption
- * the math rests on — that real pi-mono actually gates a session to that
- * allowlist, admitting extension-registered tools (the #47 fix) and dropping
- * the rest.
+ * asserts that `runAgent` hands the right `excludeTools` denylist to a
+ * *simulated* `createAgentSession`. That proves our scope math, but not the
+ * assumption the math rests on — that real pi-mono actually gates a session to
+ * that scope, admitting extension-registered tools and dropping the rest.
  *
  * This test closes that loop with NO pi-mono mock:
- *   - a real extension fixture (`fixtures/e2e-probe-ext.mjs`) registers a tool,
- *   - the real `DefaultResourceLoader` loads it via `additionalExtensionPaths`,
+ *   - a real inline extension fixture registers a tool,
+ *   - the real `DefaultResourceLoader` discovers and loads it,
  *   - the real `createAgentSession` builds the session,
  *   - we read the real `session.getActiveToolNames()` at `onSessionCreated`
  *     (fires after construction, before any prompt) and assert what the LLM
@@ -23,14 +22,11 @@
  * provider registers in a different `pi-ai` module instance than the one
  * pi-coding-agent streams through, which is brittle and orthogonal to gating.)
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { extensionCanonicalName, runAgent } from "../src/agent-runner.js";
-import { registerAgents } from "../src/agent-types.js";
-import type { AgentConfig } from "../src/types.js";
+import { runAgent } from "../src/agent-runner.js";
 import { registerFauxProvider } from "./helpers/pi-ai.js";
 
 // These tests spin up the REAL pi-mono runtime (loader + dynamic extension
@@ -39,10 +35,10 @@ import { registerFauxProvider } from "./helpers/pi-ai.js";
 // a genuine hang still fails, just later.
 vi.setConfig({ testTimeout: 30_000 });
 
-const FIXTURE = resolve(fileURLToPath(new URL("./fixtures/e2e-probe-ext.mjs", import.meta.url)));
 /** The fixture registers exactly this tool. */
 const EXT_TOOL = "e2e_probe";
 const BUILTINS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
+const EXPLORE_TOOLS = ["read", "bash", "grep", "find", "ls"];
 
 /** Minimal `pi` stub — `detectEnv` only needs `exec` (returns non-git). */
 function makePi() {
@@ -55,6 +51,31 @@ describe("agent-runner end-to-end (real pi-mono session + real extension)", () =
 
   beforeEach(() => {
     cwd = mkdtempSync(join(tmpdir(), "subagents-e2e-"));
+    // pi discovers project extensions from <cwd>/.pi/extensions/ — install the
+    // probe there so the REAL loader discovers and loads it. Inline content with
+    // no bare imports: a file under /tmp cannot resolve the repo's node_modules,
+    // and the tool schema is a plain JSON-Schema object, so none are needed.
+    mkdirSync(join(cwd, ".pi", "extensions"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".pi", "extensions", "package.json"),
+      JSON.stringify({ type: "module" }),
+    );
+    writeFileSync(
+      join(cwd, ".pi", "extensions", "e2e-probe.js"),
+      [
+        "export default function (pi) {",
+        "  pi.registerTool({",
+        '    name: "e2e_probe",',
+        '    label: "E2E Probe",',
+        '    description: "Probe tool for the end-to-end test.",',
+        '    parameters: { type: "object", properties: {} },',
+        "    async execute() {",
+        '      return { content: [{ type: "text", text: "probed" }] };',
+        "    },",
+        "  });",
+        "}",
+      ].join("\n"),
+    );
     // Only used as a valid Model object for createAgentSession; we never rely
     // on it actually streaming (we assert on the pre-prompt gated tool set).
     faux = registerFauxProvider({ provider: "faux", models: [{ id: "faux-1", contextWindow: 200_000 }] });
@@ -65,29 +86,11 @@ describe("agent-runner end-to-end (real pi-mono session + real extension)", () =
   });
 
   /**
-   * Register `cfg` as agent type "e2e", run it through the REAL runAgent, and
-   * return the real session's active tool names captured at construction time.
+   * Run `type` through the REAL runAgent in `cwd` (where the fixture extension
+   * is discovered) and return the real session's active tool names captured at
+   * construction time, plus the session for veto probing.
    */
-  async function activeToolsFor(cfg: Partial<AgentConfig>): Promise<string[]> {
-    registerAgents(
-      new Map([
-        [
-          "e2e",
-          {
-            name: "e2e",
-            description: "e2e",
-            builtinToolNames: BUILTINS,
-            skills: false,
-            systemPrompt: "You are e2e.",
-            promptMode: "replace",
-            inheritContext: false,
-            runInBackground: false,
-            isolated: false,
-            ...cfg,
-          } as AgentConfig,
-        ],
-      ]),
-    );
+  async function runType(type: string): Promise<{ active: string[]; session: any }> {
     const model = faux.getModel();
     const modelRegistry: any = {
       find: () => model,
@@ -102,11 +105,13 @@ describe("agent-runner end-to-end (real pi-mono session + real extension)", () =
     const ctx: any = { cwd, getSystemPrompt: () => "PARENT", model, modelRegistry };
 
     let active: string[] = [];
+    let session: any;
     try {
-      await runAgent(ctx, "e2e", "go", {
+      await runAgent(ctx, type, "go", {
         pi: makePi(),
         model,
         onSessionCreated: (s) => {
+          session = s;
           active = s.getActiveToolNames();
         },
       });
@@ -114,48 +119,38 @@ describe("agent-runner end-to-end (real pi-mono session + real extension)", () =
       // A no-op/erroring prompt turn is fine — the gated tool set is fixed at
       // construction, which `onSessionCreated` already captured.
     }
-    return active;
+    return { active, session };
   }
 
-  it("real pi-mono admits an extension-registered tool when it's in the allowlist (#47)", async () => {
-    const active = await activeToolsFor({ extensions: [FIXTURE] });
+  it("real pi-mono admits an extension-registered tool for a type without a tool list (#47)", async () => {
+    const { active } = await runType("general-purpose");
     // The extension actually loaded and its tool reached the live session.
     expect(active).toContain(EXT_TOOL);
     for (const b of BUILTINS) expect(active).toContain(b);
+    // This extension's own orchestration tools never reach a subagent.
+    expect(active).not.toContain("Agent");
   });
 
-  it("an extension tool is absent when extensions are disabled (not loaded)", async () => {
-    const active = await activeToolsFor({ extensions: false });
+  it("a declared tool list is exact: the extension tool is absent, the declared built-ins present", async () => {
+    const { active } = await runType("Explore");
     expect(active).not.toContain(EXT_TOOL);
-    for (const b of BUILTINS) expect(active).toContain(b);
+    for (const b of EXPLORE_TOOLS) expect(active).toContain(b);
+    for (const b of ["edit", "write"]) expect(active).not.toContain(b);
   });
 
-  it("disallowedTools removes a real extension tool from the live session", async () => {
-    const active = await activeToolsFor({ extensions: [FIXTURE], disallowedTools: [EXT_TOOL] });
-    expect(active).not.toContain(EXT_TOOL); // loaded, then denied at construction
-    expect(active).toContain("read");
-  });
+  it("the turn-1 veto blocks an out-of-scope extension tool on a declared-list type", async () => {
+    const { session } = await runType("Explore");
+    expect(session).toBeDefined();
 
-  it("the ext: allowlist flip mutes a loaded-but-unselected extension in real pi-mono", async () => {
-    // Extension loads (extensions: [FIXTURE]), but a single ext: selector for a
-    // *different* name flips extension tools to an allowlist — the unselected
-    // fixture contributes nothing, even though it loaded and ran its handlers.
-    const active = await activeToolsFor({ extensions: [FIXTURE], extSelectors: ["ext:not-the-fixture"] });
-    expect(active).not.toContain(EXT_TOOL);
-    for (const b of BUILTINS) expect(active).toContain(b);
-  });
+    // Turn 1 cannot be narrowed by active-set re-derivation alone; the veto is
+    // the guard. It must block the loaded-but-out-of-scope extension tool…
+    await expect(
+      session.agent.beforeToolCall({ toolCall: { name: EXT_TOOL }, args: {} }),
+    ).resolves.toMatchObject({ block: true, reason: expect.any(String) });
 
-  it("an ext: selector surfaces the loaded extension's tool through the flip", async () => {
-    // Derive the canonical name the loader/selector matcher uses, so the test
-    // tracks `extensionCanonicalName` rather than hard-coding a filename form.
-    const canon = extensionCanonicalName(FIXTURE);
-    const active = await activeToolsFor({
-      extensions: [FIXTURE],
-      builtinToolNames: ["read"],
-      extSelectors: [`ext:${canon}`],
-    });
-    expect(active).toContain(EXT_TOOL); // selected → surfaces despite the flip
-    expect(active).toContain("read");
-    expect(active).not.toContain("bash"); // builtinToolNames: ["read"] only
+    // …and pass an in-scope built-in through to pi's own hook unharmed.
+    await expect(
+      session.agent.beforeToolCall({ toolCall: { name: "read" }, args: {} }),
+    ).resolves.toSatisfy((r: any) => !r?.block);
   });
 });

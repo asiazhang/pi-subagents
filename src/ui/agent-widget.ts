@@ -6,8 +6,7 @@
  */
 
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import { renderAgentName } from "../agent-color.js";
-import { type AgentManager, isTopLevelAgent } from "../agent-manager.js";
+import { type AgentManager } from "../agent-manager.js";
 import { getConfig } from "../agent-types.js";
 import type { AgentInvocation, SubagentType, WidgetMode } from "../types.js";
 import { getLifetimeTotal, getSessionContextPercent, type LifetimeUsage, type SessionLike } from "../usage.js";
@@ -173,9 +172,9 @@ export function formatDuration(startedAt: number, completedAt?: number): string 
   return `${formatMs(Date.now() - startedAt)} (running)`;
 }
 
-/** Get display name for any agent type (built-in or custom). */
+/** Get display name for any agent type. */
 export function getDisplayName(type: SubagentType): string {
-  return getConfig(type).displayName;
+  return getConfig(type).name;
 }
 
 /** Short label for prompt mode: "twin" for append, nothing for replace (the default). */
@@ -200,8 +199,6 @@ export function buildInvocationTags(
     value && requested && requested !== value ? `${value} (asked ${requested})` : value;
   const thinking = asked(invocation.thinking, invocation.requestedThinking);
   if (thinking) tags.push(`thinking: ${thinking}`);
-  if (invocation.isolated) tags.push("isolated");
-  if (invocation.inheritContext) tags.push("inherit context");
   if (invocation.runInBackground) tags.push("background");
   if (invocation.maxTurns != null) tags.push(`max turns: ${invocation.maxTurns}`);
   return {
@@ -287,7 +284,7 @@ export class AgentWidget {
    *   - `all`: every agent.
    */
   private widgetAgents() {
-    const all = this.manager.listAgents().filter(isTopLevelAgent);
+    const all = this.manager.listAgents();
     switch (this.mode()) {
       case "off": return [];
       case "background": return all.filter(a => a.isBackground !== false);
@@ -385,7 +382,7 @@ export class AgentWidget {
     parts.push(duration);
 
     const modeTag = modeLabel ? ` ${theme.fg("dim", `(${modeLabel})`)}` : "";
-    return `${icon} ${renderAgentName(a.type, theme, { fallbackColor: "dim" })}${modeTag}  ${theme.fg("dim", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", parts.join(" · "))}${statusText}`;
+    return `${icon} ${theme.fg("dim", a.type)}${modeTag}  ${theme.fg("dim", a.description)} ${theme.fg("dim", "·")} ${theme.fg("dim", parts.join(" · "))}${statusText}`;
   }
 
   /**
@@ -447,7 +444,7 @@ export class AgentWidget {
       const activity = bg ? describeActivity(bg.activeTools, bg.responseText) : "thinking…";
 
       runningLines.push([
-        truncate(theme.fg("dim", "├─") + ` ${theme.fg("accent", frame)} ${renderAgentName(a.type, theme, { bold: true })}${modeTag}  ${theme.fg("muted", a.description)} ${theme.fg("dim", "·")} ${fgPreservingNestedStyles(theme, "dim", statsText)}`),
+        truncate(theme.fg("dim", "├─") + ` ${theme.fg("accent", frame)} ${theme.bold(a.type)}${modeTag}  ${theme.fg("muted", a.description)} ${theme.fg("dim", "·")} ${fgPreservingNestedStyles(theme, "dim", statsText)}`),
         truncate(theme.fg("dim", "│  ") + theme.fg("dim", `  ⎿  ${activity}`)),
       ]);
     }

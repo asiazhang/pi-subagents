@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it } from "vitest";
-import { getAgentConfig, registerAgents } from "../src/agent-types.js";
+import { describe, expect, it } from "vitest";
+import { getAgentConfig } from "../src/agent-types.js";
 import { buildAgentPrompt } from "../src/prompts.js";
 import type { AgentConfig, EnvInfo } from "../src/types.js";
 
@@ -14,11 +14,6 @@ const envNoGit: EnvInfo = {
   branch: "",
   platform: "linux",
 };
-
-// Initialize default agents
-beforeEach(() => {
-  registerAgents(new Map());
-});
 
 function getDefaultConfig(name: string): AgentConfig {
   return getAgentConfig(name)!;

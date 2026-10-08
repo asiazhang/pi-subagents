@@ -47,19 +47,12 @@ describe("settings persistence", () => {
   it("round-trips values: saveSettings then loadSettings", () => {
     const values = {
       maxConcurrent: 8,
-      maxConcurrentForeground: 2,
       defaultMaxTurns: 40,
       graceTurns: 3,
-      defaultJoinMode: "smart" as const,
       backgroundByDefault: false,
-      scopeModels: true,
-      strictAgentFiles: true,
-      disableDefaultAgents: true,
       rememberAgents: false,
       widgetMode: "all" as const,
       outputTranscript: false,
-      maxSubagentDepth: 3,
-      fallbackSubagent: "Explore",
     };
     saveSettings(values, projectDir);
     expect(loadSettings(projectDir)).toEqual(values);
@@ -129,6 +122,11 @@ describe("settings persistence", () => {
     expect((loaded as Record<string, unknown>).futureField).toBeUndefined();
   });
 
+  it("drops unknown removed-feature fields instead of preserving them", () => {
+    writeProject({ maxConcurrentForeground: 2, maxSubagentDepth: 3, fallbackSubagent: "none", scopeModels: true, strictAgentFiles: true, disableDefaultAgents: true, defaultJoinMode: "smart" });
+    expect(loadSettings(projectDir)).toEqual({});
+  });
+
   describe("sanitizer", () => {
     it("drops maxConcurrent < 1", () => {
       writeProject({ maxConcurrent: 0, graceTurns: 5 });
@@ -149,20 +147,6 @@ describe("settings persistence", () => {
       expect(loadSettings(projectDir).maxConcurrent).toBeUndefined();
     });
 
-    // Unlike maxConcurrent above, 0 is the DEFAULT here and means unlimited —
-    // dropping it would make the default unrepresentable in the file.
-    it("keeps maxConcurrentForeground: 0 (explicit unlimited)", () => {
-      writeProject({ maxConcurrentForeground: 0 });
-      expect(loadSettings(projectDir)).toEqual({ maxConcurrentForeground: 0 });
-    });
-
-    it("drops out-of-range or non-integer maxConcurrentForeground", () => {
-      writeProject({ maxConcurrentForeground: -1 });
-      expect(loadSettings(projectDir)).toEqual({});
-      writeProject({ maxConcurrentForeground: 1.5 });
-      expect(loadSettings(projectDir)).toEqual({});
-    });
-
     it("accepts defaultMaxTurns: 0 (explicit unlimited)", () => {
       writeProject({ defaultMaxTurns: 0 });
       expect(loadSettings(projectDir)).toEqual({ defaultMaxTurns: 0 });
@@ -176,109 +160,6 @@ describe("settings persistence", () => {
     it("drops graceTurns < 1", () => {
       writeProject({ graceTurns: 0 });
       expect(loadSettings(projectDir)).toEqual({});
-    });
-
-    it("keeps maxSubagentDepth 0 (nesting off) but drops negative, fractional, and over-ceiling values", () => {
-      writeProject({ maxSubagentDepth: 0 });
-      expect(loadSettings(projectDir)).toEqual({ maxSubagentDepth: 0 });
-      writeProject({ maxSubagentDepth: -1 });
-      expect(loadSettings(projectDir)).toEqual({});
-      writeProject({ maxSubagentDepth: 1.5 });
-      expect(loadSettings(projectDir)).toEqual({});
-      writeProject({ maxSubagentDepth: 17 });
-      expect(loadSettings(projectDir)).toEqual({});
-    });
-
-    it("accepts `none` and `false` as the disabled fallback, nothing else", () => {
-      // Only the boolean needs an alias: it would otherwise be dropped, leaving
-      // the PERMISSIVE default while the author believed strict was on. Every
-      // string stays an agent name, so a mistaken "off" fails loudly at dispatch
-      // instead of meaning one thing here and another in the resolver.
-      for (const spelling of ["none", "NONE", " none ", false]) {
-        writeProject({ fallbackSubagent: spelling });
-        expect(loadSettings(projectDir).fallbackSubagent?.toLowerCase()).toBe("none");
-      }
-      writeProject({ fallbackSubagent: "off" });
-      expect(loadSettings(projectDir)).toEqual({ fallbackSubagent: "off" });
-    });
-
-    it("drops values that aren't a string or `false`, without coercing them", () => {
-      // String(["none"]) is "none" — coercing would silently enable strict mode.
-      for (const junk of [["none"], null, 42, true, {}]) {
-        writeProject({ fallbackSubagent: junk });
-        expect(loadSettings(projectDir)).toEqual({});
-      }
-    });
-
-    it("keeps a named fallback agent and drops non-strings", () => {
-      writeProject({ fallbackSubagent: "  my-router  " });
-      expect(loadSettings(projectDir)).toEqual({ fallbackSubagent: "my-router" });
-      writeProject({ fallbackSubagent: 42 });
-      expect(loadSettings(projectDir)).toEqual({});
-      writeProject({ fallbackSubagent: "   " });
-      expect(loadSettings(projectDir)).toEqual({});
-    });
-
-    it("drops invalid defaultJoinMode values", () => {
-      writeProject({ defaultJoinMode: "invalid" });
-      expect(loadSettings(projectDir)).toEqual({});
-      writeProject({ defaultJoinMode: 42 });
-      expect(loadSettings(projectDir)).toEqual({});
-      writeProject({ defaultJoinMode: "" });
-      expect(loadSettings(projectDir)).toEqual({});
-    });
-
-    it("accepts all three valid join modes", () => {
-      for (const mode of ["async", "group", "smart"] as const) {
-        writeProject({ defaultJoinMode: mode });
-        expect(loadSettings(projectDir)).toEqual({ defaultJoinMode: mode });
-      }
-    });
-
-    it("accepts scopeModels boolean (true and false)", () => {
-      writeProject({ scopeModels: true });
-      expect(loadSettings(projectDir)).toEqual({ scopeModels: true });
-      writeProject({ scopeModels: false });
-      expect(loadSettings(projectDir)).toEqual({ scopeModels: false });
-    });
-
-    it("accepts strictAgentFiles boolean (true and false)", () => {
-      writeProject({ strictAgentFiles: true });
-      expect(loadSettings(projectDir)).toEqual({ strictAgentFiles: true });
-      writeProject({ strictAgentFiles: false });
-      expect(loadSettings(projectDir)).toEqual({ strictAgentFiles: false });
-    });
-
-    it("drops non-boolean strictAgentFiles", () => {
-      writeProject({ strictAgentFiles: "yes" });
-      expect(loadSettings(projectDir).strictAgentFiles).toBeUndefined();
-      writeProject({ strictAgentFiles: 1 });
-      expect(loadSettings(projectDir).strictAgentFiles).toBeUndefined();
-    });
-
-    it("drops non-boolean scopeModels", () => {
-      writeProject({ scopeModels: "yes" });
-      expect(loadSettings(projectDir).scopeModels).toBeUndefined();
-      writeProject({ scopeModels: 1 });
-      expect(loadSettings(projectDir).scopeModels).toBeUndefined();
-      writeProject({ scopeModels: null });
-      expect(loadSettings(projectDir).scopeModels).toBeUndefined();
-    });
-
-    it("accepts disableDefaultAgents boolean (true and false)", () => {
-      writeProject({ disableDefaultAgents: true });
-      expect(loadSettings(projectDir)).toEqual({ disableDefaultAgents: true });
-      writeProject({ disableDefaultAgents: false });
-      expect(loadSettings(projectDir)).toEqual({ disableDefaultAgents: false });
-    });
-
-    it("drops non-boolean disableDefaultAgents", () => {
-      writeProject({ disableDefaultAgents: "yes" });
-      expect(loadSettings(projectDir).disableDefaultAgents).toBeUndefined();
-      writeProject({ disableDefaultAgents: 1 });
-      expect(loadSettings(projectDir).disableDefaultAgents).toBeUndefined();
-      writeProject({ disableDefaultAgents: null });
-      expect(loadSettings(projectDir).disableDefaultAgents).toBeUndefined();
     });
 
     it("returns {} when the JSON root is not an object (array, string, null)", () => {
@@ -296,7 +177,7 @@ describe("settings persistence", () => {
         maxConcurrent: 4, // ok
         defaultMaxTurns: -5, // dropped
         graceTurns: 3, // ok
-        defaultJoinMode: "nope", // dropped
+        widgetMode: "nope", // dropped
       });
       expect(loadSettings(projectDir)).toEqual({ maxConcurrent: 4, graceTurns: 3 });
     });
@@ -373,38 +254,19 @@ describe("settings persistence", () => {
     beforeEach(() => {
       appliers = {
         setMaxConcurrent: vi.fn(),
-        setMaxConcurrentForeground: vi.fn(),
         setDefaultMaxTurns: vi.fn(),
         setGraceTurns: vi.fn(),
-        setDefaultJoinMode: vi.fn(),
         setBackgroundByDefault: vi.fn(),
-        setScopeModels: vi.fn(),
-        setStrictAgentFiles: vi.fn(),
-        setDisableDefaultAgents: vi.fn(),
         setRememberAgents: vi.fn(),
         setWidgetMode: vi.fn(),
         setOutputTranscript: vi.fn(),
-        setMaxSubagentDepth: vi.fn(),
-        setFallbackSubagent: vi.fn(),
       };
-    });
-
-    it("applies maxConcurrentForeground, including an explicit 0", () => {
-      applySettings({ maxConcurrentForeground: 4 }, appliers);
-      expect(appliers.setMaxConcurrentForeground).toHaveBeenCalledWith(4);
-      applySettings({ maxConcurrentForeground: 0 }, appliers);
-      expect(appliers.setMaxConcurrentForeground).toHaveBeenCalledWith(0);
     });
 
     it("is a no-op on an empty settings object", () => {
       applySettings({}, appliers);
       expect(appliers.setMaxConcurrent).not.toHaveBeenCalled();
       expect(appliers.setBackgroundByDefault).not.toHaveBeenCalled();
-    });
-
-    it("applies fallbackSubagent through to the registry", () => {
-      applySettings({ fallbackSubagent: "none" }, appliers);
-      expect(appliers.setFallbackSubagent).toHaveBeenCalledWith("none");
     });
 
     it("applies only the fields that are present", () => {
@@ -425,16 +287,6 @@ describe("settings persistence", () => {
       expect(appliers.setRememberAgents).toHaveBeenCalledWith(false);
       applySettings({}, appliers);
       expect(appliers.setRememberAgents).toHaveBeenCalledTimes(1);
-    });
-
-    it("applies scopeModels: false", () => {
-      applySettings({ scopeModels: false }, appliers);
-      expect(appliers.setScopeModels).toHaveBeenCalledWith(false);
-    });
-
-    it("applies disableDefaultAgents: false", () => {
-      applySettings({ disableDefaultAgents: false }, appliers);
-      expect(appliers.setDisableDefaultAgents).toHaveBeenCalledWith(false);
     });
 
     it("applies outputTranscript (both true and false)", () => {
@@ -486,19 +338,12 @@ describe("settings persistence", () => {
     beforeEach(() => {
       appliers = {
         setMaxConcurrent: vi.fn(),
-        setMaxConcurrentForeground: vi.fn(),
         setDefaultMaxTurns: vi.fn(),
         setGraceTurns: vi.fn(),
-        setDefaultJoinMode: vi.fn(),
         setBackgroundByDefault: vi.fn(),
-        setScopeModels: vi.fn(),
-        setStrictAgentFiles: vi.fn(),
-        setDisableDefaultAgents: vi.fn(),
         setRememberAgents: vi.fn(),
         setWidgetMode: vi.fn(),
         setOutputTranscript: vi.fn(),
-        setMaxSubagentDepth: vi.fn(),
-        setFallbackSubagent: vi.fn(),
       };
     });
 
@@ -510,7 +355,6 @@ describe("settings persistence", () => {
       expect(appliers.setMaxConcurrent).toHaveBeenCalledWith(16);
       expect(appliers.setGraceTurns).toHaveBeenCalledWith(7);
       expect(appliers.setDefaultMaxTurns).not.toHaveBeenCalled();
-      expect(appliers.setDefaultJoinMode).not.toHaveBeenCalled();
       expect(result).toEqual({ maxConcurrent: 16, graceTurns: 7 });
     });
 
@@ -522,7 +366,6 @@ describe("settings persistence", () => {
       expect(appliers.setMaxConcurrent).not.toHaveBeenCalled();
       expect(appliers.setDefaultMaxTurns).not.toHaveBeenCalled();
       expect(appliers.setGraceTurns).not.toHaveBeenCalled();
-      expect(appliers.setDefaultJoinMode).not.toHaveBeenCalled();
     });
   });
 

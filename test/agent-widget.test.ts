@@ -114,15 +114,6 @@ describe("AgentWidget", () => {
     expect(renderLines(manager, "foreground", () => "all")).toContain("foreground description");
   });
 
-  it("hides nested children in every coordinator widget mode", () => {
-    const manager = {
-      listAgents: () => [makeRecord("nested", { isBackground: true, parentAgentId: "parent" })],
-    };
-    expect(renderLines(manager, "nested", () => "all")).toBe("");
-    expect(renderLines(manager, "nested", () => "background")).toBe("");
-  });
-
-
   it("excludes foreground agents in 'background' mode", () => {
     const manager = { listAgents: () => [makeRecord("foreground", { isBackground: false })] };
     expect(renderLines(manager, "foreground", () => "background")).toBe("");

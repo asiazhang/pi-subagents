@@ -175,24 +175,4 @@ describe("output_transcript agent wiring", () => {
     expect(streamToOutputFile).not.toHaveBeenCalled();
     await lifecycle.get("session_shutdown")?.({}, makeCtx(cwd));
   });
-
-  it("lets agent frontmatter output_transcript true override a project outputTranscript false", async () => {
-    writeFileSync(join(cwd, ".pi", "subagents.json"), JSON.stringify({ schedulingEnabled: false, outputTranscript: false }));
-    writeFileSync(join(agentDir, "agents", "audited.md"), `---\ndescription: Always keeps a transcript\noutput_transcript: true\n---\n\nWrite a transcript regardless of the project default.`);
-    const { pi, tools, lifecycle } = makePi();
-    subagentsExtension(pi);
-
-    await tools.get("Agent").execute(
-      "tool-call",
-      { prompt: "audited work", description: "Do audited work", subagent_type: "audited" },
-      undefined,
-      undefined,
-      makeCtx(cwd),
-    );
-
-    expect(createOutputFilePath).toHaveBeenCalledOnce();
-    expect(writeInitialEntry).toHaveBeenCalledOnce();
-    expect(streamToOutputFile).toHaveBeenCalledOnce();
-    await lifecycle.get("session_shutdown")?.({}, makeCtx(cwd));
-  });
 });

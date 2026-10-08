@@ -12,9 +12,6 @@
  * (no network). The same runner also drives a real LLM when PI_E2E_LIVE=1 — the
  * `live` describe below is a smoke test for that opt-in path.
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { Context } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -161,111 +158,6 @@ describe.skipIf(LIVE)("subagents print-mode e2e (scripted faux, real pi-mono)", 
     expect(run.modelCalls).toBeGreaterThanOrEqual(3);
   });
 
-  it("spawns a FRONTMATTER-defined (.pi/agents/*.md) agent and its prompt reaches the child", async () => {
-    // A project agent whose body is a distinctive system prompt. Proving the
-    // child SAW it proves the full chain: the extension discovers the .md from
-    // process.cwd(), parses its frontmatter, and runAgent's buildAgentPrompt
-    // feeds the body into the real child session.
-    const MARKER = "SPYMARKER_FRONTMATTER_REACHED_CHILD";
-    const cwd = mkdtempSync(join(tmpdir(), "subagents-fm-"));
-    tmpDirs.push(cwd);
-    mkdirSync(join(cwd, ".pi", "agents"), { recursive: true });
-    writeFileSync(
-      join(cwd, ".pi", "agents", "echo-spy.md"),
-      `---\ndescription: "Echoes a marker proving its frontmatter prompt reached the child."\n---\n${MARKER}\n`,
-    );
-
-    run = await runPrintMode({
-      prompt: "Delegate to the echo-spy agent.",
-      cwd, // runner chdir's here so the extension discovers echo-spy.md
-      respond: routeBySession({
-        parentInitial: agentCall({
-          subagent_type: "echo-spy",
-          description: "echo",
-          prompt: "Report what you were told.",
-          run_in_background: false,
-        }),
-        parentFinal: "Reported.",
-        // The child reflects whether the frontmatter body reached its own prompt.
-        subagent: (ctx: Context) =>
-          `child saw: ${ctx.systemPrompt?.includes(MARKER) ? MARKER : "MISSING"}`,
-      }),
-    });
-
-    const toolResults = agentToolResults(run.parentSession);
-    expect(toolResults.length).toBe(1);
-    expect(toolResults[0]).toContain(MARKER);
-    expect(toolResults[0]).not.toContain("MISSING");
-    // The custom type resolved — it did NOT silently fall back to general-purpose.
-    expect(toolResults[0]).not.toMatch(/Unknown agent type/i);
-  });
-
-  it("spawns a FRONTMATTER-defined (.agents/agents/*.md) agent and its prompt reaches the child", async () => {
-    const MARKER = "SPYMARKER_AGENTS_FRONTMATTER_REACHED_CHILD";
-    const cwd = mkdtempSync(join(tmpdir(), "subagents-agents-fm-"));
-    tmpDirs.push(cwd);
-    mkdirSync(join(cwd, ".agents", "agents"), { recursive: true });
-    writeFileSync(
-      join(cwd, ".agents", "agents", "agents-spy.md"),
-      `---\ndescription: "Echoes a marker from the .agents/agents workspace dir."\n---\n${MARKER}\n`,
-    );
-
-    run = await runPrintMode({
-      prompt: "Delegate to the agents-spy agent.",
-      cwd,
-      respond: routeBySession({
-        parentInitial: agentCall({
-          subagent_type: "agents-spy",
-          description: "echo workspace",
-          prompt: "Report what you were told.",
-          run_in_background: false,
-        }),
-        parentFinal: "Reported.",
-        subagent: (ctx: Context) =>
-          `child saw: ${ctx.systemPrompt?.includes(MARKER) ? MARKER : "MISSING"}`,
-      }),
-    });
-
-    const toolResults = agentToolResults(run.parentSession);
-    expect(toolResults.length).toBe(1);
-    expect(toolResults[0]).toContain(MARKER);
-    expect(toolResults[0]).not.toContain("MISSING");
-    expect(toolResults[0]).not.toMatch(/Unknown agent type/i);
-  });
-
-  it("a colored agent's name badge never reaches print-mode text", async () => {
-    // Badges are a TUI concern: print mode renders no tool components, and the text the
-    // model and `pi -p` see is built from plain display names. An escape sequence here
-    // would mean color leaking into transcripts, headless output and the parent prompt.
-    const cwd = mkdtempSync(join(tmpdir(), "subagents-color-"));
-    tmpDirs.push(cwd);
-    mkdirSync(join(cwd, ".pi", "agents"), { recursive: true });
-    writeFileSync(
-      join(cwd, ".pi", "agents", "painted.md"),
-      '---\nname: Painted Agent\ncolor: purple\ndescription: "A colored agent."\n---\nBe brief.\n',
-    );
-
-    run = await runPrintMode({
-      prompt: "Delegate to the painted agent.",
-      cwd,
-      respond: routeBySession({
-        parentInitial: agentCall({
-          subagent_type: "painted",
-          description: "paint",
-          prompt: "Report in.",
-          run_in_background: false,
-        }),
-        parentFinal: "Done.",
-        subagent: "Painted Agent reporting in.",
-      }),
-    });
-
-    const result = agentToolResults(run.parentSession)[0];
-    expect(result).toContain("Painted Agent reporting in."); // the escape check below is not vacuous
-    expect(result).not.toContain("\u001b");
-    expect(conversationText(run.parentSession)).not.toContain("\u001b");
-  });
-
   it("errors clearly when faux mode is given no script", async () => {
     await expect(runPrintMode({ prompt: "x" })).rejects.toThrow(/provide `respond` or `steps`/);
   });
@@ -361,7 +253,7 @@ describe.runIf(LIVE)("subagents print-mode e2e (live LLM, opt-in)", () => {
         timeoutMs: LIVE_TIMEOUT,
       });
       const calls = agentToolCalls(run.parentSession);
-      // The non-default type was actually selected (case-insensitive per README).
+      // The non-default type was actually selected (strict dispatch — only exact "Explore" resolves).
       expect(
         calls.some((c) => String(c.subagent_type ?? "").toLowerCase() === "explore"),
       ).toBe(true);
