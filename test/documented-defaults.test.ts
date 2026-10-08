@@ -1,4 +1,4 @@
-// README publishes concrete default values (Persistent settings, README:250).
+// README publishes concrete default values (README, "持久化设置" section).
 // Every existing test that looked like it checked one actually SET the value
 // first — `test/agent-runner-settings.test.ts` had a `beforeEach(setGraceTurns(5))`
 // followed by `it("defaults to 5")`, which asserts the setter, not the default.
@@ -11,7 +11,7 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-describe("documented defaults (README:250)", () => {
+describe("documented defaults (README 持久化设置)", () => {
   beforeEach(() => {
     vi.resetModules();
   });

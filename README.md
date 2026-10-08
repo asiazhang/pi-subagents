@@ -1,46 +1,38 @@
 # @tintinweb/pi-subagents
 
-一个 [pi](https://pi.dev) 扩展,为 pi 带来 **Claude Code 风格的自主子代理**。生成运行在隔离会话中的专用代理——每个代理拥有自己的工具、系统提示词、模型和思考级别。默认在后台运行(也可阻塞等待),可在运行中途引导(steer),可恢复已完成的会话。
+一个 [pi](https://pi.dev) 扩展,为 pi 带来 **Claude Code 风格的自主子代理**:生成运行在隔离会话中的专用代理,默认后台运行、完成时通知,可中途引导(steer)、可恢复(resume)。
 
-> 本仓库是上游 `@tintinweb/pi-subagents` 的个人精简 fork:面向单机 TUI 使用。第一轮收窄删除了工作流引擎、调度、跨扩展 RPC、Agent 提及、worktree 隔离、持久化记忆与技能预加载([ADR 0001](docs/adr/0001-personal-fork-scope.md));第二轮收窄删除了自定义代理文件、嵌套子代理、模型范围、前台并发池、回退解析,只保留 `general-purpose` 与 `Explore` 两个内置类型([ADR 0002](docs/adr/0002-second-round-narrowing.md))。
-
-<img width="600" alt="pi-subagents screenshot" src="https://github.com/tintinweb/pi-subagents/raw/master/media/screenshot.png" />
-
-https://github.com/user-attachments/assets/8685261b-9338-4fea-8dfe-1c590d5df543
+> 本仓库是上游 `@tintinweb/pi-subagents` 的个人精简 fork,只保留 `general-purpose` 与 `Explore` 两个内嵌代理类型。两轮收窄的决策与理由见 [ADR 0001](docs/adr/0001-personal-fork-scope.md) 与 [ADR 0002](docs/adr/0002-second-round-narrowing.md)。
 
 ## 功能特性
 
-- **Claude Code 观感** — 相同的工具名称、调用约定和 UI 模式(`Agent`、`get_subagent_result`、`steer_subagent`)——感觉浑然一体
-- **并行后台代理** — 生成多个并发运行的代理,带自动排队(并发上限可配置,默认 10)与智能分组汇聚(同一轮生成的代理合并为一条完成通知)
-- **实时小组件 UI** — 编辑器上方的常驻小组件,带动画 spinner、实时工具活动、token 计数和彩色状态图标。通过 `/agents → Settings → Widget` 配置:`all`(所有代理)、`background`(默认——隐藏前台运行,前台运行本就以 `Agent` 工具结果的形式内联渲染),或 `off`
-- **对话查看器** — 在 `/agents` 中选中任意代理,打开其实时滚动的完整对话覆盖层(自动跟随新内容,向上滚动即暂停)。对运行中的代理,按 `Enter` 打开输入框,输入后按 `Enter` 发送即可内联引导(`Esc` 或空提交则返回)——消息以用户消息的形式出现,并在代理当前工具执行完后改变其工作方向。按 `x`(再按一次 `x` 确认)可停止仍在运行的代理——对后台代理同样有效。助手文本以 Markdown 渲染;`m` 可在会话内于关闭、仅助手文本与全部之间切换
-- **运行中引导** — 向运行中的代理注入消息以改变其工作方向,无需重启
-- **会话恢复** — 从代理上次停下的地方继续,保留完整对话上下文。默认以分离方式恢复并在完成时通知你,与全新生成一样;传 `run_in_background: false` 可阻塞并内联获得结果
-- **严格类型分派** — `subagent_type` 必须精确匹配一个可用类型;未知类型直接报错并列出可用类型,不回退、不猜测
-- **优雅轮次上限** — 代理在硬中止前会收到"收尾"警告,产出干净的局部结果而非被截断的输出
-- **美化的完成通知** — 后台代理结果渲染为主题化的紧凑通知框(图标、统计、结果预览)而非原始 XML。可展开显示完整输出。分组完成时逐个渲染每个代理
+- **Claude Code 观感** — 相同的工具名称与调用约定:`Agent`、`get_subagent_result`、`steer_subagent`
+- **并行后台代理** — 并发上限可配置(默认 10),多余代理自动排队;同一轮生成的多个代理,完成通知合并为一条(智能汇聚,固定行为)
+- **实时小组件** — 编辑器上方常驻,显示 spinner、工具活动与 token 计数;`/agents → Settings → Widget` 切换 `all` / `background`(默认,隐藏前台运行)/ `off`
+- **对话查看器** — `/agents` 中选中代理,打开其实时对话覆盖层;`Enter` 打开输入框内联引导运行中的代理,`x`(按两次确认)停止,`m` 切换 Markdown 渲染(关 / 仅助手文本 / 全部)
+- **会话恢复** — `resume` 参数从代理上次停下的地方继续;默认分离恢复并在完成时通知,`run_in_background: false` 可阻塞并内联取结果
+- **严格类型分派** — `subagent_type` 必须精确匹配一个可用类型;未知类型直接报错并列出可用类型,不回退、不大小写折叠
+- **优雅轮次上限** — 到达上限先注入收尾警告,产出干净的局部结果而非被截断的输出
 
 ## 安装
 
-```bash
-pi install npm:@tintinweb/pi-subagents
+```sh
+pi install git:github.com/asiazhang/pi-subagents
 ```
 
-或开发时直接加载:
+或临时试用(不写入设置):
 
-```bash
-pi -e ./src/index.ts
+```sh
+pi -e git:github.com/asiazhang/pi-subagents
+```
+
+更新已安装的扩展(拉取远程最新代码):
+
+```sh
+pi update --extension git:github.com/asiazhang/pi-subagents
 ```
 
 需要 pi **0.84.0 或更新版本**(`peerDependencies` 已声明)。
-
-### 其他宿主
-
-本扩展针对 [pi](https://pi.dev) 开发和测试。
-
-第三方适配器报告了在别处运行它的方法。这些项目独立于本项目维护:未经此处测试,不在我们的 CI 覆盖范围内,兼容性可能随任何版本发布而破坏。
-
-- **DeepSeek Harness (`dsh`)** — 通过一个把 pi 宿主 API 映射到原生 DSH 代理的适配器。详情与反馈:[#258](https://github.com/tintinweb/pi-subagents/issues/258)
 
 ## 快速开始
 
@@ -55,26 +47,7 @@ Agent({
 })
 ```
 
-代理默认在后台运行:调用立即返回一个 ID,完成时通知你,并附结果预览(用 `get_subagent_result` 获取全文)。传 `run_in_background: false` 可阻塞直到代理完成,并内联获得其完整输出。
-
-## 界面
-
-扩展在编辑器上方渲染一个常驻小组件,显示活动代理。默认只显示后台运行(`widgetMode: background`)——前台代理本就内联渲染为 `Agent` 工具结果,否则小组件会重复渲染它们。通过 `/agents → Settings → Widget` 切换为 `all`(所有代理)或 `off`(隐藏小组件):
-
-```
-● Agents
-├─ ⠹ Agent  Refactor auth module · ↻5≤30 · 5 tool uses · 33.8k token (62%) · 12.3s
-│    ⎿  editing 2 files…
-├─ ⠹ Explore  Find auth files · ↻3 · 3 tool uses · 12.4k token (8%) · 4.1s
-│    ⎿  searching…
-├─ ⠹ Agent  Long-running task · ↻42 · 38 tool uses · 91.0k token (84% · ⇊2) · 2m17s
-│    ⎿  reading…
-└─ 2 queued
-```
-
-token 字段在括号内带两个可选信号:
-- **`NN%`** — 上下文窗口占用率(按颜色区分:<70% 暗淡,70–85% 警告,≥85% 错误)。模型未声明 `contextWindow` 时省略,或紧随压缩之后短暂省略。
-- **`⇊N`** — 会话被压缩的次数(大于 0 时显示)。保持暗淡;紧急程度由百分比的颜色承载。
+后台运行:调用立即返回一个 ID,完成通知附结果预览(`get_subagent_result` 取全文)。传 `run_in_background: false` 可阻塞直到代理完成,并内联获得其完整输出。
 
 ## 代理类型
 
@@ -83,9 +56,9 @@ token 字段在括号内带两个可选信号:
 | 类型 | 工具 | 模型 | 提示词模式 | 描述 |
 |------|-------|-------|-------------|-------------|
 | `general-purpose` | 全部 7 个内置工具 + 全部扩展工具 | 继承父级 | `append`(父级孪生) | 继承父级的完整系统提示词——同样的规则、CLAUDE.md、项目约定 |
-| `Explore` | read, bash, grep, find, ls | `opencode-go/claude-haiku-5-5`(该模型未配置时回退继承父级) | `replace`(独立) | 快速只读代码探索 |
+| `Explore` | read, bash, grep, find, ls | `opencode-go/claude-haiku-5-5`(未配置时回退继承父级) | `replace`(独立) | 快速只读代码探索 |
 
-`general-purpose` 代理是**父级孪生**——它接收父级的完整系统提示词,外加一个子代理上下文桥接,因此遵循与父级相同的规则。Explore 使用为其只读角色定制的独立提示词,并钉死一个快速便宜的模型;模型必须以精确的 `provider/modelId` 解析,解析不到(如提供方未配置)则回退继承父级模型。
+`general-purpose` 是**父级孪生**——接收父级的完整系统提示词,外加一个子代理上下文桥接,因此遵循与父级相同的规则。`Explore` 使用为其只读角色定制的独立提示词,并钉死一个快速便宜的模型;模型必须以精确的 `provider/modelId` 解析,解析不到(如提供方未配置)则回退继承父级模型。
 
 ### 类型分派
 
@@ -99,8 +72,6 @@ token 字段在括号内带两个可选信号:
 
 - **声明了列表 = 精确白名单。** 代理恰好呈现所列的内置工具,不多不少;扩展工具一概不呈现。扩展**仍然加载**——它们的事件钩子和非工具副作用照常活跃,只是工具不进入代理的工具集。
 - **省略列表 = 全量。** 全部 7 个内置工具,加上所有扩展提供的工具。
-
-两个内置类型正好各占一态:`general-purpose` 省略(全量),`Explore` 声明白名单(只读五件套)。
 
 ## 工具
 
@@ -161,31 +132,19 @@ token 字段在括号内带两个可选信号:
 | `aborted` | 超出宽限期 | `✗` 红色 |
 | `stopped` | 用户发起的中止 | `■` 暗淡 |
 
-## 并发
+## 并发与完成通知
 
-单一后台池(`maxConcurrent`,默认 10)。多余的代理自动排队,等运行中的代理完成后启动。小组件把排队的代理显示为折叠计数。由于代理默认后台运行,几乎每次生成都占一个槽;上限从 4 提高,以免普通的并行扇出排队。
+单一后台池(`maxConcurrent`,默认 10):多余的代理自动排队,等运行中的代理完成后启动。前台代理(`run_in_background: false`)不占池——它阻塞父级,而 pi 经 `Promise.all` 分派同一条消息的工具调用,本来就同时运行。后台恢复占一个池;前台恢复重开现有会话,不走生成路径。
 
-前台代理不占池:它阻塞父级——父级本可以自己做那份工作而不必花一个槽——而 pi 经 `Promise.all` 分派一条消息的工具调用,一条消息里多个 `run_in_background: false` 的调用本来就同时运行。
-
-后台恢复(`resume`)像其他后台代理一样占一个槽、参与排队;前台恢复重新打开现有会话,不走生成路径,不受池约束。
-
-## 完成通知的汇聚
-
-后台代理完成时通知主代理。同一轮生成的 2 个以上后台代理自动合并为一条通知(全部完成或 30 秒超时,以先到者为准;超时发送已完成结果的部分通知,掉队者完成后再以更短的 15 秒窗口补发)。单独生成的代理逐个通知。此行为固定,不可配置。
+后台代理完成时通知主代理。同一轮生成的 2 个以上代理自动合并为一条通知(全部完成或 30 秒超时,以先到者为准;超时先送达已完成结果,掉队者完成后再以 15 秒窗口补发)。单独生成的代理逐个通知。
 
 ## 持久化设置
 
-通过 `/agents` → Settings 设置的运行时调优值(最大并发、默认最大轮次、宽限轮次、默认后台、输出转录、记住代理、小组件 all/background/off)跨 pi 重启持久化。单一文件:`<cwd>/.pi/subagents.json`(本 fork 删除了全局层)。
+通过 `/agents` → Settings 设置的运行时调优值持久化在 `<cwd>/.pi/subagents.json`,跨 pi 重启生效。缺失字段回退硬编码默认:并发 `10`、默认最大轮次无限、宽限轮次 `5`、默认后台开启。
 
-**优先级:** 缺失字段回退到硬编码默认值(最大并发 `10`、默认最大轮次无限、宽限轮次 `5`、默认后台开启)。
-
-**默认后台**(`backgroundByDefault`,默认 `true`):一条没说明的 `Agent` 调用意味着什么。开启时——跟随 Claude Code——代理分离运行,调用立即返回其 ID,完成通知附结果预览(`get_subagent_result` 取全文)。设 `false` 恢复先前的行为:未限定的生成阻塞轮次并内联返回输出。调用上显式的 `run_in_background` 双向覆盖此设置;该设置只决定"未指定"意味着什么。通过 `/agents` → Settings → Background by default 切换;实时生效。
-
-**记住代理**(`rememberAgents`,默认 `true`):子代理是否持久化其 pi 会话。开启时顶层子代理写会话文件,并在 pi 的 `/resume` 中嵌套于生成它们的会话之下。通过 `/agents` → Settings → Remember agents 切换。
-
-**输出转录**(`outputTranscript`,默认 `true`):写出每个子代理 `.output` 转录的项目默认。转录写在共享临时目录下的 `pi-subagents-<uid>/` 根中,该根强制 `0700`(仅所有者可读;chmod 在 Windows 上跳过)——转录含完整对话,这个模式是它们不暴露给本机其他用户的唯一保证。通过 `/agents` → Settings → Output transcript 切换,或在 `subagents.json` 中设 `false` 让转录项目级变为可选——当运行转录不该留在磁盘上时有用。只管理转录,不管会话持久化。
-
-**示例——高配机器上的默认值:**
+- **`backgroundByDefault`**(默认 `true`)— 一条没说明的 `Agent` 调用意味着什么:开启时代理分离运行,调用立即返回 ID;设 `false` 则未限定的生成阻塞轮次并内联返回输出。调用上显式的 `run_in_background` 双向覆盖。
+- **`rememberAgents`**(默认 `true`) - 子代理是否持久化其 pi 会话;开启时在 pi 的 `/resume` 中嵌套于生成它们的会话之下。
+- **`outputTranscript`**(默认 `true`)— 是否写出每个子代理的 `.output` 转录。转录写在共享临时目录下的 `pi-subagents-<uid>/` 根中,该根强制 `0700`(仅所有者可读;Windows 上跳过 chmod)。
 
 ```bash
 mkdir -p .pi
@@ -197,10 +156,7 @@ cat > .pi/subagents.json <<'SETTINGS_EOF'
 SETTINGS_EOF
 ```
 
-现在本项目以并发 16、宽限 10 起步,完全不用碰菜单。
-
-**失败行为:** 缺文件静默;格式错误的 JSON 向 stderr 记录 `[pi-subagents] Ignoring malformed settings at …` 警告;无效/越界的字段值逐字段丢弃;写入失败把 `/agents` toast 降级为带 `(session only; failed to persist)` 的警告。
-
+**失败行为:** 缺文件静默;格式错误的 JSON 向 stderr 警告并整体忽略;无效/越界的字段值逐字段丢弃;写入失败把 `/agents` toast 降级为带 `(session only; failed to persist)` 的警告。
 
 ## 架构
 

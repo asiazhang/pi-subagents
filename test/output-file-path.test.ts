@@ -1,4 +1,4 @@
-// README:186 promises the transcript root is owner-only `0700`. Transcripts
+// README (输出转录 section) promises the transcript root is owner-only `0700`. Transcripts
 // hold the agent's full conversation — user prompts, file contents, tool output —
 // in a shared temp dir, so that mode is the only thing keeping them from every
 // other local user. `createOutputFilePath` is mocked in the one wiring test that
