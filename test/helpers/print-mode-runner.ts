@@ -185,6 +185,20 @@ export function agentCall(
   return fauxToolCall("Agent", { subagent_type: "general-purpose", ...args }, opts);
 }
 
+/**
+ * Names of the tools declared to the model for this call. pi-ai 1.x folds
+ * `context.tools` into the transcript: tool declarations live on system
+ * messages as `toolsAdded`, and `context.tools` is no longer populated.
+ */
+export function declaredToolNames(context: Context): string[] {
+  const names = new Set((context.tools ?? []).map((t) => t.name));
+  for (const m of context.messages) {
+    if (m.role !== "system") continue;
+    for (const t of m.toolsAdded ?? []) names.add(t.name);
+  }
+  return [...names];
+}
+
 function resolveReply(
   reply: FauxReply | ((ctx: Context) => FauxReply),
   ctx: Context,
@@ -207,7 +221,7 @@ export function routeBySession(routes: {
   subagent: FauxReply | ((ctx: Context) => FauxReply);
 }): FauxResponder {
   return (context) => {
-    const isParent = (context.tools ?? []).some((t) => t.name === "Agent");
+    const isParent = declaredToolNames(context).includes("Agent");
     if (!isParent) return resolveReply(routes.subagent, context);
     const spawned = context.messages.some(
       (m) => m.role === "toolResult" && (m as { toolName?: string }).toolName === "Agent",

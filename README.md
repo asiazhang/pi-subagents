@@ -32,7 +32,7 @@ pi -e git:github.com/asiazhang/pi-subagents
 pi update --extension git:github.com/asiazhang/pi-subagents
 ```
 
-需要 pi **0.84.0 或更新版本**(`peerDependencies` 已声明)。
+需要 pi **1.0.0 或更新版本(需要 Node.js ≥ 22.19)**(`peerDependencies` 已声明)。
 
 ## 快速开始
 

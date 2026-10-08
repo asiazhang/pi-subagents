@@ -19,6 +19,7 @@ import {
   agentToolCalls,
   agentToolResults,
   conversationText,
+  declaredToolNames,
   invokedToolNames,
   type PrintModeRun,
   routeBySession,
@@ -126,7 +127,7 @@ describe.skipIf(LIVE)("subagents print-mode e2e (scripted faux, real pi-mono)", 
     //     finishes → the child's own model turn actually runs (≥3 calls).
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
     const respond = async (ctx: Context) => {
-      const isParent = (ctx.tools ?? []).some((t) => t.name === "Agent");
+      const isParent = declaredToolNames(ctx).includes("Agent");
       if (!isParent) {
         await sleep(80); // child takes long enough that a non-held parent exits first
         return "CHILD_BG_RAN";

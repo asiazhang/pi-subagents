@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+> **⚠️ Breaking — this release requires pi 1.0.0 or newer** (`peerDependencies` moves from `>=0.84.0`). The dev/test toolchain now compiles and tests against pi 1.1.0, and pi 1.0 requires Node.js 22.19 or newer. Upgrade pi before installing this version; npm flags an older pi at install time.
+
+### Changed
+
+- **BREAKING: pi peer floor raised to `>=1.0.0`.** The `@earendil-works/pi-*` devDependencies are pinned to `1.1.0` (exact), and the `compat-floor-pi` CI job now runs typecheck and the full suite against `1.0.0`, the earliest release the range claims. Migration: upgrade pi to 1.0.0 or later. pi 1.0 removed or changed some extension-facing APIs (e.g. `shouldStopAfterTurn`); this extension does not use them.
+
 ### Removed
 
 - **The built-in `Plan` agent type is gone.** This fork does not use it; the type no longer registers, so `subagent_type: "Plan"` resolves like any unknown type (fallback agent, or a hard error under `fallbackSubagent: none`). Recreate it per-project with a `.pi/agents/plan.md` if needed — `general-purpose` and `Explore` are unaffected.
@@ -14,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **此 fork 收窄到最小核心面:删除工作流引擎、调度、跨扩展 RPC、Agent 提及、worktree 隔离、持久化记忆、技能预加载、FleetView、模糊模型解析与全部显示项开关。** 个人维护的 fork,按实际使用盘点取舍(src/ 约 20.9k 行 → 约 9.2k 行)。保留核心闭环(后台/队列/通知/引导/恢复)、自定义代理、嵌套子代理、scopeModels、汇聚策略与 widget/对话查看器。工具面相应收缩:`Agent` 失去 `name`/`isolation`/`schedule` 参数,`SubagentWorkflow` 工具、`--subagents-workflow-file` 标志、`/agents` 的 Workflows/Scheduled jobs 入口、`subagents:*` 事件与 `subagents:rpc:*` 通道全部移除;`get_subagent_result`/`steer_subagent` 只接受 `agent_id`;模型解析只认精确的 `provider/modelId`(钉死模型必须是注册表现有 id,否则回退继承);设置只剩项目级 `.pi/subagents.json`。保留项与删除项的完整理由见 [docs/adr/0001-personal-fork-scope.md](docs/adr/0001-personal-fork-scope.md)。
 
 ### Fixed
+
+- **pi no longer warns that `@sinclair/typebox` and `typebox` must be peer dependencies** ([#382](https://github.com/tintinweb/pi-subagents/issues/382)). Both were host-provided packages listed under `dependencies`, so installs could shadow pi's copies. `typebox` was unused and is removed; `@sinclair/typebox` is now a `*` peer, with a dev dependency (`^0.34.49`) for local typecheck and tests. Nothing to do for users on pi 1.0 or newer.
 
 ## [0.19.0] - 2026-08-25
 
