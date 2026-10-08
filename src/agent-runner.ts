@@ -64,17 +64,6 @@ export function resolveEffectiveMaxTurns(type: string, explicit?: number): numbe
   return normalizeMaxTurns(explicit ?? getAgentConfig(type)?.maxTurns ?? defaultMaxTurns);
 }
 
-/**
- * Project default for `persist_session`, from the `rememberAgents` setting.
- * On by default: a persisted session is what lets an agent's conversation be
- * reopened from pi's `/resume` after its record has been evicted.
- */
-let rememberAgents = true;
-
-/** Whether subagent sessions are persisted by default. */
-export function getRememberAgents(): boolean { return rememberAgents; }
-/** Set whether subagent sessions are persisted by default. */
-export function setRememberAgents(b: boolean): void { rememberAgents = b; }
 
 /** Additional turns allowed after the soft limit steer message. */
 let graceTurns = 5;
@@ -130,15 +119,6 @@ export interface RunOptions {
   maxTurns?: number;
   signal?: AbortSignal;
   thinkingLevel?: ThinkingLevel;
-  /**
-   * Reopen this pi session file rather than starting an empty conversation.
-   * `createAgentSession` seeds itself from whatever its SessionManager holds,
-   * so pointing it at an existing file rehydrates that agent's history and the
-   * prompt continues it. Everything else — tools, model, system prompt, turn
-   * caps — is still resolved from the agent type, so the continuation runs
-   * under the type's *current* definition, not the one the original run used.
-   */
-  resumeSessionFile?: string;
   /** Called on tool start/end with activity info. */
   onToolActivity?: (activity: ToolActivity) => void;
   /** Called on streaming text deltas from the assistant response. */
@@ -206,8 +186,8 @@ function collectResponseText(session: AgentSession) {
 /**
  * Get the last non-empty assistant text produced during THIS invocation.
  * `startIndex` is the message count captured before the prompt, so the walk-back
- * never crosses into a previous turn: on a resume whose new turn failed empty,
- * this returns "" instead of the prior turn's answer (#144). Defaults to 0 (a
+ * never crosses into messages that predate this prompt, so a turn that failed
+ * empty returns "" instead of an earlier answer (#144). Defaults to 0 (a
  * fresh spawn, where the whole history belongs to this run).
  */
 function getLastAssistantText(session: AgentSession, startIndex = 0): string {
@@ -231,7 +211,7 @@ function getLastAssistantText(session: AgentSession, startIndex = 0): string {
  * Everything else completes: a clean "stop"/"toolUse" final, and — crucially — a
  * "length" stop that DID produce text (a legitimate truncated-but-useful answer).
  * "aborted" is handled by the manager's abort flag / "stopped" guard, not here.
- * Bounded by `startIndex` (like the text fallback) so a resume that produced no
+ * Bounded by `startIndex` (like the text fallback) so a turn that produced no
  * assistant message of its own never inherits a PRIOR turn's stop reason.
  */
 function finalTurnError(session: AgentSession, startIndex = 0): string | undefined {
@@ -279,7 +259,7 @@ function forwardAbortSignal(session: AgentSession, signal?: AbortSignal): () => 
  *     is no hook in between. A call-time check is the only correct guard there.
  *
  * Both are installed on the session and deliberately NOT unsubscribed: they must
- * outlive the `runAgent` call so resumed/steered turns stay scoped. pi's `dispose()`
+ * outlive the `runAgent` call so steered turns stay scoped. pi's `dispose()`
  * clears `_eventListeners`, so they die with the session rather than leaking.
  *
  * Scope semantics (Q11 of the fork narrowing): an agent type that declares a
@@ -421,20 +401,7 @@ export async function runAgent(
   ];
 
   const settingsManager = SettingsManager.create(effectiveCwd, agentDir);
-  const defaultSessionDir = process.env.PI_CODING_AGENT_SESSION_DIR ?? settingsManager.getSessionDir?.();
-  const sessionManager = options.resumeSessionFile
-    // Reopening an existing conversation: the file already carries its own
-    // header (cwd, parent) and history, so none of the create-time options
-    // apply. The session dir still matters for a later /new or /branch off it.
-    ? SessionManager.open(options.resumeSessionFile, defaultSessionDir)
-    : rememberAgents
-      ? SessionManager.create(effectiveCwd, defaultSessionDir, {
-          // Optional metadata — it only nests the subagent under its spawner in
-          // `/resume`. A context without a session manager (a bare programmatic
-          // ctx) must still persist rather than take the whole spawn down.
-          parentSession: ctx.sessionManager?.getSessionFile?.(),
-        })
-      : SessionManager.inMemory(effectiveCwd);
+  const sessionManager = SessionManager.inMemory(effectiveCwd);
 
   // Pi 0.80.8 replaced createAgentSession's modelRegistry option with
   // modelRuntime, but ExtensionContext still exposes only the registry facade.
@@ -563,59 +530,6 @@ export async function runAgent(
   };
 }
 
-/**
- * Send a new prompt to an existing session (resume).
- */
-export async function resumeAgent(
-  session: AgentSession,
-  prompt: string,
-  options: {
-    onToolActivity?: (activity: ToolActivity) => void;
-    onAssistantUsage?: (usage: LifetimeUsage) => void;
-    onCompaction?: (info: { reason: "manual" | "threshold" | "overflow"; tokensBefore: number }) => void;
-    signal?: AbortSignal;
-  } = {},
-): Promise<{ text: string; failure?: string }> {
-  // Boundary for the history fallback: the session already holds prior turns,
-  // so only assistant text produced by THIS resume prompt counts as its output
-  // — a failed resume must not surface the previous turn's answer (#144).
-  const startLen = session.messages.length;
-  const collector = collectResponseText(session);
-  const cleanupAbort = forwardAbortSignal(session, options.signal);
-
-  const unsubEvents = (options.onToolActivity || options.onAssistantUsage || options.onCompaction)
-    ? session.subscribe((event: AgentSessionEvent) => {
-        if (event.type === "tool_execution_start") options.onToolActivity?.({ type: "start", toolName: event.toolName });
-        if (event.type === "tool_execution_end") options.onToolActivity?.({ type: "end", toolName: event.toolName });
-        if (event.type === "message_end" && event.message.role === "assistant") {
-          const u = (event.message as any).usage;
-          if (u) options.onAssistantUsage?.({
-            input: u.input ?? 0,
-            output: u.output ?? 0,
-            cacheWrite: u.cacheWrite ?? 0,
-            cacheRead: u.cacheRead ?? 0,
-            cost: u.cost?.total ?? 0,
-          });
-        }
-        if (event.type === "compaction_end" && !event.aborted && event.result) {
-          options.onCompaction?.({ reason: event.reason, tokensBefore: event.result.tokensBefore });
-        }
-      })
-    : () => {};
-
-  try {
-    await session.prompt(prompt);
-  } finally {
-    collector.unsubscribe();
-    unsubEvents();
-    cleanupAbort();
-  }
-
-  return {
-    text: collector.getText().trim() || getLastAssistantText(session, startLen),
-    failure: finalTurnError(session, startLen),
-  };
-}
 
 /**
  * Send a steering message to a running subagent.

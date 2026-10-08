@@ -16,7 +16,6 @@ import { AgentManager } from "../src/agent-manager.js";
 
 vi.mock("../src/agent-runner.js", () => ({
   runAgent: vi.fn(),
-  resumeAgent: vi.fn(),
 }));
 
 import { runAgent } from "../src/agent-runner.js";

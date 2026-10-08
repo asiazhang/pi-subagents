@@ -26,12 +26,6 @@ export interface SubagentsSettings {
    */
   backgroundByDefault?: boolean;
   /**
-   * Whether subagents persist their pi session by default. Defaults to `true`.
-   * Persisted sessions appear nested under the spawning session in pi's
-   * `/resume`.
-   */
-  rememberAgents?: boolean;
-  /**
    * Display mode for the persistent above-editor agent widget:
    *   - `all`: show every agent (foreground + background).
    *   - `background`: hide foreground agents — they already render inline as the
@@ -58,7 +52,6 @@ export interface SettingsAppliers {
   setDefaultMaxTurns: (n: number) => void;
   setGraceTurns: (n: number) => void;
   setBackgroundByDefault: (b: boolean) => void;
-  setRememberAgents: (b: boolean) => void;
   setWidgetMode: (mode: WidgetMode) => void;
   setOutputTranscript: (b: boolean) => void;
 }
@@ -100,9 +93,6 @@ function sanitize(raw: unknown): SubagentsSettings {
   }
   if (typeof r.backgroundByDefault === "boolean") {
     out.backgroundByDefault = r.backgroundByDefault;
-  }
-  if (typeof r.rememberAgents === "boolean") {
-    out.rememberAgents = r.rememberAgents;
   }
   if (typeof r.widgetMode === "string" && VALID_WIDGET_MODES.has(r.widgetMode)) {
     out.widgetMode = r.widgetMode as WidgetMode;
@@ -160,7 +150,6 @@ export function applySettings(s: SubagentsSettings, appliers: SettingsAppliers):
   if (typeof s.defaultMaxTurns === "number") appliers.setDefaultMaxTurns(s.defaultMaxTurns);
   if (typeof s.graceTurns === "number") appliers.setGraceTurns(s.graceTurns);
   if (typeof s.backgroundByDefault === "boolean") appliers.setBackgroundByDefault(s.backgroundByDefault);
-  if (typeof s.rememberAgents === "boolean") appliers.setRememberAgents(s.rememberAgents);
   if (s.widgetMode) appliers.setWidgetMode(s.widgetMode);
   if (typeof s.outputTranscript === "boolean") appliers.setOutputTranscript(s.outputTranscript);
 }

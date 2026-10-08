@@ -50,7 +50,6 @@ describe("settings persistence", () => {
       defaultMaxTurns: 40,
       graceTurns: 3,
       backgroundByDefault: false,
-      rememberAgents: false,
       widgetMode: "all" as const,
       outputTranscript: false,
     };
@@ -58,14 +57,6 @@ describe("settings persistence", () => {
     expect(loadSettings(projectDir)).toEqual(values);
   });
 
-  it("round-trips rememberAgents (true and false); keeps boolean, drops non-boolean", () => {
-    writeProject({ rememberAgents: true });
-    expect(loadSettings(projectDir)).toEqual({ rememberAgents: true });
-    writeProject({ rememberAgents: false });
-    expect(loadSettings(projectDir)).toEqual({ rememberAgents: false });
-    writeProject({ rememberAgents: "yes" });
-    expect(loadSettings(projectDir)).toEqual({});
-  });
 
   it("round-trips widgetMode; keeps valid values, drops invalid", () => {
     for (const mode of ["all", "background", "off"] as const) {
@@ -257,7 +248,6 @@ describe("settings persistence", () => {
         setDefaultMaxTurns: vi.fn(),
         setGraceTurns: vi.fn(),
         setBackgroundByDefault: vi.fn(),
-        setRememberAgents: vi.fn(),
         setWidgetMode: vi.fn(),
         setOutputTranscript: vi.fn(),
       };
@@ -282,12 +272,6 @@ describe("settings persistence", () => {
       expect(appliers.setWidgetMode).toHaveBeenCalledTimes(1);
     });
 
-    it("applies rememberAgents; skips it when absent", () => {
-      applySettings({ rememberAgents: false }, appliers);
-      expect(appliers.setRememberAgents).toHaveBeenCalledWith(false);
-      applySettings({}, appliers);
-      expect(appliers.setRememberAgents).toHaveBeenCalledTimes(1);
-    });
 
     it("applies outputTranscript (both true and false)", () => {
       applySettings({ outputTranscript: false }, appliers);
@@ -341,7 +325,6 @@ describe("settings persistence", () => {
         setDefaultMaxTurns: vi.fn(),
         setGraceTurns: vi.fn(),
         setBackgroundByDefault: vi.fn(),
-        setRememberAgents: vi.fn(),
         setWidgetMode: vi.fn(),
         setOutputTranscript: vi.fn(),
       };

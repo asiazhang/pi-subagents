@@ -6,10 +6,7 @@ const {
   loaderExtensionsRef,
   getAgentDir,
   sessionManagerInMemory,
-  sessionManagerCreate,
-  sessionManagerOpen,
   settingsManagerCreate,
-  settingsManagerGetSessionDir,
 } = vi.hoisted(() => ({
   createAgentSession: vi.fn(),
   defaultResourceLoaderCtor: vi.fn(),
@@ -22,10 +19,7 @@ const {
   },
   getAgentDir: vi.fn(() => "/mock/agent-dir"),
   sessionManagerInMemory: vi.fn(() => ({ kind: "memory-session-manager" })),
-  sessionManagerCreate: vi.fn(() => ({ kind: "persistent-session-manager" })),
-  sessionManagerOpen: vi.fn(() => ({ kind: "reopened-session-manager" })),
-  settingsManagerGetSessionDir: vi.fn(() => undefined as string | undefined),
-  settingsManagerCreate: vi.fn(() => ({ kind: "settings-manager", getSessionDir: settingsManagerGetSessionDir })),
+  settingsManagerCreate: vi.fn(() => ({ kind: "settings-manager" })),
 }));
 
 vi.mock("@earendil-works/pi-coding-agent", () => ({
@@ -53,7 +47,7 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
     }
   },
   getAgentDir,
-  SessionManager: { inMemory: sessionManagerInMemory, create: sessionManagerCreate, open: sessionManagerOpen },
+  SessionManager: { inMemory: sessionManagerInMemory },
   SettingsManager: { create: settingsManagerCreate },
 }));
 
@@ -92,7 +86,6 @@ import {
   runAgent,
   setDefaultMaxTurns,
   setGraceTurns,
-  setRememberAgents,
 } from "../src/agent-runner.js";
 import { getAgentConfig, getConfig } from "../src/agent-types.js";
 
@@ -224,13 +217,6 @@ beforeEach(() => {
   defaultResourceLoaderCtor.mockClear();
   getAgentDir.mockClear();
   sessionManagerInMemory.mockClear();
-  sessionManagerCreate.mockClear();
-  sessionManagerOpen.mockClear();
-  // The setting is process-global; a test that flips it must not leak the
-  // flip into the next one.
-  setRememberAgents(true);
-  settingsManagerGetSessionDir.mockReset();
-  settingsManagerGetSessionDir.mockReturnValue(undefined);
   settingsManagerCreate.mockClear();
   loaderExtensionsRef.current = { extensions: [], errors: [], runtime: {} };
   lastSession = undefined;
@@ -452,26 +438,8 @@ describe("getAgentConversation", () => {
   });
 });
 
-describe("agent-runner session persistence", () => {
-  it("persists by default, so a handle can reopen the conversation later", async () => {
-    // `rememberAgents` defaults on: the session file is the only thing an
-    // evicted agent leaves behind, so without it nothing after cleanup
-    // could ever start a fresh agent from where it left off.
-    vi.mocked(getAgentConfig).mockReturnValueOnce(makeAgentConfig());
-    const { session } = createSession("OK");
-    createAgentSession.mockResolvedValue({ session });
-
-    await runAgent(ctx, "Explore", "go", { pi });
-
-    expect(sessionManagerInMemory).not.toHaveBeenCalled();
-    expect(sessionManagerCreate).toHaveBeenCalled();
-    expect(createAgentSession).toHaveBeenCalledWith(expect.objectContaining({
-      sessionManager: { kind: "persistent-session-manager" },
-    }));
-  });
-
-  it("keeps the session in memory when rememberAgents is off", async () => {
-    setRememberAgents(false);
+describe("agent-runner session storage", () => {
+  it("keeps the subagent session in memory, so nothing is written to pi's session directory", async () => {
     vi.mocked(getAgentConfig).mockReturnValueOnce(makeAgentConfig());
     const { session } = createSession("OK");
     createAgentSession.mockResolvedValue({ session });
@@ -479,40 +447,8 @@ describe("agent-runner session persistence", () => {
     await runAgent(ctx, "Explore", "go", { pi });
 
     expect(sessionManagerInMemory).toHaveBeenCalledWith("/tmp");
-    expect(sessionManagerCreate).not.toHaveBeenCalled();
-  });
-
-  it("reopens an existing session file instead of starting a new conversation", async () => {
-    vi.mocked(getAgentConfig).mockReturnValueOnce(makeAgentConfig());
-    settingsManagerGetSessionDir.mockReturnValue("/normal/pi/sessions");
-    const { session } = createSession("OK");
-    createAgentSession.mockResolvedValue({ session });
-
-    await runAgent(ctx, "Explore", "carry on", { pi, resumeSessionFile: "/sessions/explore.jsonl" });
-
-    // Neither create nor inMemory: both would start an empty conversation, and
-    // the point of a resume is that the history is already there.
-    expect(sessionManagerCreate).not.toHaveBeenCalled();
-    expect(sessionManagerInMemory).not.toHaveBeenCalled();
-    expect(sessionManagerOpen).toHaveBeenCalledWith("/sessions/explore.jsonl", "/normal/pi/sessions");
-  });
-
-  it("uses pi's normal persistent session location and links to the parent session", async () => {
-    vi.mocked(getAgentConfig).mockReturnValueOnce(makeAgentConfig());
-    settingsManagerGetSessionDir.mockReturnValue("/normal/pi/sessions");
-    const { session } = createSession("OK");
-    createAgentSession.mockResolvedValue({ session });
-
-    await runAgent(ctx, "Explore", "go", { pi });
-
-    expect(sessionManagerInMemory).not.toHaveBeenCalled();
-    expect(sessionManagerCreate).toHaveBeenCalledWith(
-      "/tmp",
-      "/normal/pi/sessions",
-      { parentSession: "/sessions/parent.jsonl" },
-    );
     expect(createAgentSession).toHaveBeenCalledWith(expect.objectContaining({
-      sessionManager: { kind: "persistent-session-manager" },
+      sessionManager: { kind: "memory-session-manager" },
     }));
   });
 });

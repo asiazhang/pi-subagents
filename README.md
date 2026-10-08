@@ -1,8 +1,8 @@
 # @tintinweb/pi-subagents
 
-一个 [pi](https://pi.dev) 扩展,为 pi 带来 **Claude Code 风格的自主子代理**:生成运行在隔离会话中的专用代理,默认后台运行、完成时通知,可中途引导(steer)、可恢复(resume)。
+一个 [pi](https://pi.dev) 扩展,为 pi 带来 **Claude Code 风格的自主子代理**:生成运行在隔离会话中的专用代理,默认后台运行、完成时通知,可中途引导(steer)。
 
-> 本仓库是上游 `@tintinweb/pi-subagents` 的个人精简 fork,只保留 `general-purpose` 与 `Explore` 两个内嵌代理类型。两轮收窄的决策与理由见 [ADR 0001](docs/adr/0001-personal-fork-scope.md) 与 [ADR 0002](docs/adr/0002-second-round-narrowing.md)。
+> 本仓库是上游 `@tintinweb/pi-subagents` 的个人精简 fork,只保留 `general-purpose` 与 `Explore` 两个内嵌代理类型。两轮收窄的决策与理由见 [ADR 0001](docs/adr/0001-personal-fork-scope.md) 与 [ADR 0002](docs/adr/0002-second-round-narrowing.md);子代理 resume 的删除见 [ADR 0003](docs/adr/0003-remove-subagent-resume.md)。
 
 ## 功能特性
 
@@ -10,7 +10,6 @@
 - **并行后台代理** — 并发上限可配置(默认 10),多余代理自动排队;同一轮生成的多个代理,完成通知合并为一条(智能汇聚,固定行为)
 - **实时小组件** — 编辑器上方常驻,显示 spinner、工具活动与 token 计数;`/agents → Settings → Widget` 切换 `all` / `background`(默认,隐藏前台运行)/ `off`
 - **对话查看器** — `/agents` 中选中代理,打开其实时对话覆盖层;`Enter` 打开输入框内联引导运行中的代理,`x`(按两次确认)停止,`m` 切换 Markdown 渲染(关 / 仅助手文本 / 全部)
-- **会话恢复** — `resume` 参数从代理上次停下的地方继续;默认分离恢复并在完成时通知,`run_in_background: false` 可阻塞并内联取结果
 - **严格类型分派** — `subagent_type` 必须精确匹配一个可用类型;未知类型直接报错并列出可用类型,不回退、不大小写折叠
 - **优雅轮次上限** — 到达上限先注入收尾警告,产出干净的局部结果而非被截断的输出
 
@@ -88,7 +87,6 @@ Agent({
 | `thinking` | string | 否 | 思考级别:off, minimal, low, medium, high, xhigh, max(可用性取决于 pi 版本和模型) |
 | `max_turns` | number | 否 | 最大代理轮次。省略表示无限(默认) |
 | `run_in_background` | boolean | 否 | 默认 `true`;`false` 阻塞并内联返回结果 |
-| `resume` | string | 否 | 要恢复先前会话的代理 ID |
 
 ### `get_subagent_result`
 
@@ -143,7 +141,6 @@ Agent({
 通过 `/agents` → Settings 设置的运行时调优值持久化在 `<cwd>/.pi/subagents.json`,跨 pi 重启生效。缺失字段回退硬编码默认:并发 `10`、默认最大轮次无限、宽限轮次 `5`、默认后台开启。
 
 - **`backgroundByDefault`**(默认 `true`)— 一条没说明的 `Agent` 调用意味着什么:开启时代理分离运行,调用立即返回 ID;设 `false` 则未限定的生成阻塞轮次并内联返回输出。调用上显式的 `run_in_background` 双向覆盖。
-- **`rememberAgents`**(默认 `true`) - 子代理是否持久化其 pi 会话;开启时在 pi 的 `/resume` 中嵌套于生成它们的会话之下。
 - **`outputTranscript`**(默认 `true`)— 是否写出每个子代理的 `.output` 转录。转录写在共享临时目录下的 `pi-subagents-<uid>/` 根中,该根强制 `0700`(仅所有者可读;Windows 上跳过 chmod)。
 
 ```bash

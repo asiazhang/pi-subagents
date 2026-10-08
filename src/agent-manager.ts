@@ -1,5 +1,5 @@
 /**
- * agent-manager.ts — Tracks agents, background execution, resume support.
+ * agent-manager.ts — Tracks agents, background execution.
  *
  * One concurrency pool: `maxConcurrent` (default 10) bounds background agents.
  * Excess agents are queued and auto-started as slots free up. Foreground
@@ -9,7 +9,7 @@
 import { randomUUID } from "node:crypto";
 import type { Model } from "@earendil-works/pi-ai";
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { resumeAgent, runAgent, type ToolActivity } from "./agent-runner.js";
+import { runAgent, type ToolActivity } from "./agent-runner.js";
 import { describeModel } from "./model-resolver.js";
 import type { AgentInvocation, AgentRecord, SubagentType, ThinkingLevel } from "./types.js";
 import { addUsage } from "./usage.js";
@@ -41,13 +41,6 @@ interface SpawnArgs {
 
 interface SpawnOptions {
   description: string;
-  /**
-   * Reopen this pi session file instead of starting a fresh conversation, so a
-   * a later run continues where the previous one left off. The agent's
-   * definition is still resolved from its type, so the continuation runs under
-   * the type's CURRENT config.
-   */
-  resumeSessionFile?: string;
   model?: Model<any>;
   maxTurns?: number;
   thinkingLevel?: ThinkingLevel;
@@ -78,32 +71,6 @@ interface SpawnOptions {
   onAssistantUsage?: (usage: { input: number; output: number; cacheWrite: number }) => void;
   /** Called when the session successfully compacts. */
   onCompaction?: (info: CompactionInfo) => void;
-}
-
-interface ResumeOptions {
-  /**
-   * Run the resumed turn detached in the background: return immediately with
-   * the record still "running" (or "queued" at the concurrency limit) and
-   * notify on completion via onComplete, exactly like a background spawn.
-   * Default (false/undefined) runs the resume inline and returns the settled
-   * record — the historical behavior.
-   */
-  isBackground?: boolean;
-  /** Called on tool start/end with activity info (for streaming progress to UI). */
-  onToolActivity?: (activity: ToolActivity) => void;
-  /** Called once per assistant message_end with that message's usage delta. */
-  onAssistantUsage?: (usage: { input: number; output: number; cacheWrite: number }) => void;
-  /** Called when the session successfully compacts. */
-  onCompaction?: (info: CompactionInfo) => void;
-  /**
-   * Background resume only: called synchronously when the run actually starts —
-   * immediately, or later from drainQueue. Callers wire per-run side effects
-   * (output-file streaming) here rather than at the call site, so a resume that
-   * is stopped while still queued never leaves a subscription behind: `abort()`
-   * drops a queued record without reaching `settle()`, which is what would have
-   * torn that subscription down.
-   */
-  onStarted?: () => void;
 }
 
 /** Best-effort ceiling on one child's shutdown handlers, so teardown can't strand a quit. */
@@ -176,7 +143,7 @@ export class AgentManager {
     this.onStart = onStart;
     this.onCompact = onCompact;
     this.maxConcurrent = maxConcurrent;
-    // Cleanup completed agents after 10 minutes (but keep sessions for resume)
+    // Cleanup completed agents after 10 minutes
     this.cleanupInterval = setInterval(() => this.cleanup(), 60_000);
     this.cleanupInterval.unref();
   }
@@ -363,7 +330,6 @@ export class AgentManager {
       model: options.model,
       maxTurns: options.maxTurns,
       thinkingLevel: options.thinkingLevel,
-      resumeSessionFile: options.resumeSessionFile,
       signal: record.abortController!.signal,
       onToolActivity: (activity) => {
         if (activity.type === "end") record.toolUses++;
@@ -382,16 +348,7 @@ export class AgentManager {
       },
       onSessionCreated: (session) => {
         record.session = session;
-        // Capture now, while the session object exists: after eviction this
-        // path is the only thing that can reopen the conversation, and an
-        // in-memory session reports undefined, which correctly means
-        // "nothing to come back to".
-        // Optional chaining, not defensiveness for its own sake: this is the
-        // only field read off the session at creation, so an older pi or a
-        // stubbed session must degrade to "not resumable" rather than throw
-        // and take the whole spawn down with it.
-        record.sessionFile = session.sessionManager?.getSessionFile?.();
-        // Same reason, different field: the model and thinking level are only
+        // The model and thinking level are only
         // knowable once pi has resolved its defaults and clamped the level to
         // what the model supports. Writing them back here makes the record
         // authoritative, so every surface reads one place instead of each
@@ -586,197 +543,6 @@ export class AgentManager {
     return { id, record };
   }
 
-  /**
-   * Resume an existing agent session with a new prompt.
-   */
-  async resume(
-    id: string,
-    prompt: string,
-    signal?: AbortSignal,
-    options?: ResumeOptions,
-  ): Promise<AgentRecord | undefined> {
-    const record = this.agents.get(id);
-    if (!record?.session) return undefined;
-
-    // Background resume: settle asynchronously and notify on completion exactly
-    // like a background spawn, returning immediately with the record still
-    // "running" — or "queued" when at the concurrency limit.
-    if (options?.isBackground) {
-      // Never re-enter a run that is still in flight. Detaching means the caller
-      // gets control back while the record stays "running", so nothing stops the
-      // model from resuming the same agent again. Starting a second run would
-      // overwrite record.abortController — orphaning the live run beyond the
-      // reach of `/agents` stop and abortAll() — double-count the pool slot, and
-      // then reject from session.prompt() with "Agent is already processing",
-      // whose settle path would report a failure for a run that is still going.
-      // Refuse instead, leaving the record untouched; the caller decides whether
-      // to wait or steer.
-      if (record.status === "running" || record.status === "queued") return undefined;
-
-      record.isBackground = true;
-      record.resultConsumed = false;
-      record.result = undefined;
-      record.error = undefined;
-      record.completedAt = undefined;
-      record.status = "queued";
-
-      const start = () => this.startResume(id, record, prompt, signal, options);
-      if (this.runningBackground >= this.maxConcurrent) {
-        // At the concurrency limit — queue it, drains when a slot frees. A
-        // detached resume has no inline caller, hence nothing to release.
-        this.queue.push({
-          id,
-          start: async () => {
-            try {
-              start();
-            } catch (err) {
-              record.status = "error";
-              record.error = err instanceof Error ? err.message : String(err);
-              record.completedAt = Date.now();
-              this.onComplete?.(record);
-            }
-          },
-          release: () => {},
-        });
-      } else {
-        start();
-      }
-      return record;
-    }
-
-    // Foreground resume: run inline and return the settled record.
-    record.status = "running";
-    record.startedAt = Date.now();
-    record.completedAt = undefined;
-    record.result = undefined;
-    record.error = undefined;
-
-    try {
-      const { text, failure } = await resumeAgent(record.session, prompt, {
-        onToolActivity: (activity) => {
-          if (activity.type === "end") record.toolUses++;
-          options?.onToolActivity?.(activity);
-        },
-        onAssistantUsage: (usage) => {
-          addUsage(record.lifetimeUsage, usage);
-          options?.onAssistantUsage?.(usage);
-        },
-        onCompaction: (info) => {
-          record.compactionCount++;
-          this.onCompact?.(record, info);
-          options?.onCompaction?.(info);
-        },
-        signal,
-      });
-      // Same contract as the spawn path (#144): a failed final turn is an
-      // error, not a completion — but the resumed text stays available.
-      record.status = failure ? "error" : "completed";
-      if (failure) record.error = failure;
-      record.result = text;
-      record.completedAt = Date.now();
-    } catch (err) {
-      record.status = "error";
-      record.error = err instanceof Error ? err.message : String(err);
-      record.completedAt = Date.now();
-    }
-
-    return record;
-  }
-
-  /**
-   * Start a background resume run: detached, settling and notifying like
-   * startAgent's background path. Invoked immediately, or from drainQueue when
-   * a concurrency slot frees. The session already exists (resume reuses it), so
-   * there is no onSessionCreated to hang per-run wiring off — callers use
-   * `options.onStarted`, which fires on both the immediate and the drained path.
-   */
-  private startResume(
-    id: string,
-    record: AgentRecord,
-    prompt: string,
-    parentSignal: AbortSignal | undefined,
-    options: ResumeOptions,
-  ) {
-    if (!record.session) return;
-
-    record.status = "running";
-    record.startedAt = Date.now();
-    this.runningBackground++;
-    this.onStart?.(record);
-
-    // Fresh abort controller so /agents stop and steering target THIS run rather
-    // than the previous one's settled controller.
-    const abortController = new AbortController();
-    record.abortController = abortController;
-    // Optional, and NOT what the Agent tool passes for a detached resume: a
-    // parent signal aborts on the parent's own interrupt (user Esc), which is
-    // right for a foreground run whose result the caller is awaiting, and wrong
-    // for a detached one — background spawns omit it for exactly this reason.
-    let detachParentSignal: (() => void) | undefined;
-    if (parentSignal) {
-      const onParentAbort = () => this.abort(id);
-      parentSignal.addEventListener("abort", onParentAbort, { once: true });
-      detachParentSignal = () => parentSignal.removeEventListener("abort", onParentAbort);
-    }
-
-    // Per-run side effects (output streaming) — see ResumeOptions.onStarted.
-    // After the record is in its running shape, before the run is kicked off.
-    try { options.onStarted?.(); } catch { /* ignore caller wiring errors */ }
-
-    const settle = () => {
-      detachParentSignal?.();
-      detachParentSignal = undefined;
-      // Final flush of streaming output file
-      if (record.outputCleanup) {
-        try { record.outputCleanup(); } catch { /* ignore */ }
-        record.outputCleanup = undefined;
-      }
-      this.runningBackground--;
-      try { this.onComplete?.(record); } catch { /* ignore completion side-effect errors */ }
-      this.drainQueue();
-    };
-
-    const promise = resumeAgent(record.session, prompt, {
-      onToolActivity: (activity) => {
-        if (activity.type === "end") record.toolUses++;
-        options.onToolActivity?.(activity);
-      },
-      onAssistantUsage: (usage) => {
-        addUsage(record.lifetimeUsage, usage);
-        options.onAssistantUsage?.(usage);
-      },
-      onCompaction: (info) => {
-        record.compactionCount++;
-        this.onCompact?.(record, info);
-        options.onCompaction?.(info);
-      },
-      signal: abortController.signal,
-    })
-      .then(({ text, failure }) => {
-        // Don't overwrite status if externally stopped via abort().
-        if (record.status !== "stopped") {
-          // Same contract as the spawn path (#144): a failed final turn is an
-          // error, not a completion — but the resumed text stays available.
-          record.status = failure ? "error" : "completed";
-          if (failure) record.error = failure;
-        }
-        record.result = text;
-        record.completedAt ??= Date.now();
-        settle();
-        return text;
-      })
-      .catch((err) => {
-        if (record.status !== "stopped") {
-          record.status = "error";
-          record.error = err instanceof Error ? err.message : String(err);
-        }
-        record.completedAt ??= Date.now();
-        settle();
-        return "";
-      });
-
-    record.promise = promise;
-  }
 
   /**
    * Send a steering message to an agent from the UI (mirrors the steer_subagent

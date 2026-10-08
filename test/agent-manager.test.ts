@@ -5,7 +5,6 @@ import type { AgentRecord } from "../src/types.js";
 
 vi.mock("../src/agent-runner.js", () => ({
   runAgent: vi.fn(),
-  resumeAgent: vi.fn(),
 }));
 
 const mockPi = {} as any;
@@ -470,40 +469,5 @@ describe("AgentManager — lifetime usage + compaction count are eagerly initial
     expect(manager.getRecord(id)!.compactionCount).toBe(2);
   });
 
-  it("resume() also accumulates usage and increments compactions on the same record", async () => {
-    manager = new AgentManager();
-
-    // First, spawn with a session that resume can latch onto
-    const session = { ...mockSession() };
-    vi.mocked(runAgent).mockResolvedValue({
-      responseText: "first",
-      session: session as any,
-      aborted: false,
-      steered: false,
-    });
-
-    const id = manager.spawn(mockPi, mockCtx, "general-purpose", "test", {
-      description: "test",
-      isBackground: true,
-    });
-    await manager.getRecord(id)!.promise;
-
-    // Pre-resume: lifetimeUsage from spawn was zero (mock didn't call onAssistantUsage)
-    expect(manager.getRecord(id)!.lifetimeUsage).toEqual({ input: 0, output: 0, cacheWrite: 0, cost: 0 });
-    expect(manager.getRecord(id)!.compactionCount).toBe(0);
-
-    // Now resume — drive callbacks via the mocked resumeAgent
-    const { resumeAgent: resumeMock } = await import("../src/agent-runner.js");
-    vi.mocked(resumeMock).mockImplementation(async (_session, _prompt, opts: any) => {
-      opts.onAssistantUsage?.({ input: 70, output: 30, cacheWrite: 5, cost: 0.007 });
-      opts.onCompaction?.({ reason: "overflow", tokensBefore: 999 });
-      return { text: "second" };
-    });
-
-    await manager.resume(id, "more");
-
-    expect(manager.getRecord(id)!.lifetimeUsage).toEqual({ input: 70, output: 30, cacheWrite: 5, cost: 0.007 });
-    expect(manager.getRecord(id)!.compactionCount).toBe(1);
-  });
 });
 

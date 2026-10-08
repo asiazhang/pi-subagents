@@ -84,13 +84,6 @@ export interface AgentRecord {
   toolCallId?: string;
   /** Path to the streaming output transcript file. */
   outputFile?: string;
-  /**
-   * The agent's pi session file, when it was persisted (`rememberAgents`).
-   * Captured so a session can reopen the conversation after the record itself
-   * has been evicted; undefined for an in-memory session, which leaves nothing
-   * to reopen.
-   */
-  sessionFile?: string;
   /** Cleanup function for the output file stream subscription. */
   outputCleanup?: () => void;
   /**
