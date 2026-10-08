@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.20.0] - 2026-10-08
 
 > **⚠️ Breaking — this release requires pi 1.0.0 or newer** (`peerDependencies` moves from `>=0.84.0`). The dev/test toolchain now compiles and tests against pi 1.1.0, and pi 1.0 requires Node.js 22.19 or newer. Upgrade pi before installing this version; npm flags an older pi at install time.
 
